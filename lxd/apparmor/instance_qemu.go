@@ -10,6 +10,9 @@ profile "{{ .name }}" flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/consoles>
   #include <abstractions/nameservice>
 
+  # Allow processes to send us signals by default
+  signal (receive),
+
   capability dac_override,
   capability dac_read_search,
   capability ipc_lock,
@@ -83,6 +86,13 @@ profile "{{ .name }}" flags=(attach_disconnected,mediate_deleted) {
 
   # Snap-specific libraries
   /snap/lxd/*/lib/**.so*            mr,
+
+{{- if .snapExtQemuPrefix }}
+  /snap/lxd/*/{{ .snapExtQemuPrefix }}/lib/**.so*        mr,
+  /snap/lxd/*/{{ .snapExtQemuPrefix }}/bin/qemu-system-* mrix,
+  /snap/lxd/*/{{ .snapExtQemuPrefix }}/share/**          r,
+{{- end }}
+
 {{- end }}
 
 {{if .libraryPath -}}
@@ -92,13 +102,9 @@ profile "{{ .name }}" flags=(attach_disconnected,mediate_deleted) {
 {{- end }}
 {{- end }}
 
-{{if .qemuFwPaths -}}
-  # Entries from LXD_OVMF_PATH or LXD_QEMU_FW_PATH
-{{range $index, $element := .qemuFwPaths}}
-  {{$element}}/OVMF_CODE.fd   kr,
-  {{$element}}/OVMF_CODE.*.fd kr,
-  {{$element}}/*bios*.bin     kr,
-{{- end }}
+{{if .firmwarePath -}}
+  # Firmware path
+  {{ .firmwarePath }}                         kr,
 {{- end }}
 
 {{- if .raw }}

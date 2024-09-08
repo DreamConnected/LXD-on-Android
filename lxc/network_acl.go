@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -96,6 +97,14 @@ func (c *cmdNetworkACLList) command() *cobra.Command {
 	cmd.RunE = c.run
 	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", "table", i18n.G("Format (csv|json|table|yaml|compact)")+"``")
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpRemotes(false)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -121,7 +130,7 @@ func (c *cmdNetworkACLList) run(cmd *cobra.Command, args []string) error {
 
 	// List the networks.
 	if resource.name != "" {
-		return fmt.Errorf(i18n.G("Filtering isn't supported yet"))
+		return errors.New(i18n.G("Filtering isn't supported yet"))
 	}
 
 	acls, err := resource.server.GetNetworkACLs()
@@ -165,6 +174,14 @@ func (c *cmdNetworkACLShow) command() *cobra.Command {
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G("Show network ACL configurations"))
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworkACLs(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -184,7 +201,7 @@ func (c *cmdNetworkACLShow) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network ACL name"))
+		return errors.New(i18n.G("Missing network ACL name"))
 	}
 
 	// Show the network ACL config.
@@ -218,6 +235,14 @@ func (c *cmdNetworkACLShowLog) command() *cobra.Command {
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G("Show network ACL log"))
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworkACLs(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -236,7 +261,7 @@ func (c *cmdNetworkACLShowLog) run(cmd *cobra.Command, args []string) error {
 
 	resource := resources[0]
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network ACL name"))
+		return errors.New(i18n.G("Missing network ACL name"))
 	}
 
 	// Get the ACL log.
@@ -268,6 +293,18 @@ func (c *cmdNetworkACLGet) command() *cobra.Command {
 	cmd.Flags().BoolVarP(&c.flagIsProperty, "property", "p", false, i18n.G("Get the key as a network ACL property"))
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworkACLs(toComplete)
+		}
+
+		if len(args) == 1 {
+			return c.global.cmpNetworkACLConfigs(args[0])
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -287,7 +324,7 @@ func (c *cmdNetworkACLGet) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network ACL name"))
+		return errors.New(i18n.G("Missing network ACL name"))
 	}
 
 	resp, _, err := resource.server.GetNetworkACL(resource.name)
@@ -325,8 +362,20 @@ func (c *cmdNetworkACLCreate) command() *cobra.Command {
 	cmd.Use = usage("create", i18n.G("[<remote>:]<ACL> [key=value...]"))
 	cmd.Short = i18n.G("Create new network ACLs")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G("Create new network ACLs"))
+	cmd.Example = cli.FormatSection("", i18n.G(`lxc network acl create a1
+
+lxc network acl create a1 < config.yaml
+    Create network acl with configuration from config.yaml`))
 
 	cmd.RunE = c.run
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworkACLs(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 
 	return cmd
 }
@@ -347,7 +396,7 @@ func (c *cmdNetworkACLCreate) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network ACL name"))
+		return errors.New(i18n.G("Missing network ACL name"))
 	}
 
 	// If stdin isn't a terminal, read yaml from it.
@@ -418,6 +467,14 @@ For backward compatibility, a single configuration key may still be set with:
 	cmd.Flags().BoolVarP(&c.flagIsProperty, "property", "p", false, i18n.G("Set the key as a network ACL property"))
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworkACLs(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -437,7 +494,7 @@ func (c *cmdNetworkACLSet) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network ACL name"))
+		return errors.New(i18n.G("Missing network ACL name"))
 	}
 
 	// Get the network ACL.
@@ -493,6 +550,19 @@ func (c *cmdNetworkACLUnset) command() *cobra.Command {
 	cmd.RunE = c.run
 
 	cmd.Flags().BoolVarP(&c.flagIsProperty, "property", "p", false, i18n.G("Unset the key as a network ACL property"))
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworkACLs(toComplete)
+		}
+
+		if len(args) == 1 {
+			return c.global.cmpNetworkACLConfigs(args[0])
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -522,6 +592,14 @@ func (c *cmdNetworkACLEdit) command() *cobra.Command {
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G("Edit network ACL configurations as YAML"))
 
 	cmd.RunE = c.run
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworkACLs(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 
 	return cmd
 }
@@ -569,7 +647,7 @@ func (c *cmdNetworkACLEdit) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network ACL name"))
+		return errors.New(i18n.G("Missing network ACL name"))
 	}
 
 	// If stdin isn't a terminal, read text from it
@@ -653,6 +731,14 @@ func (c *cmdNetworkACLRename) command() *cobra.Command {
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G("Rename network ACLs"))
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworkACLs(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -672,7 +758,7 @@ func (c *cmdNetworkACLRename) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network ACL name"))
+		return errors.New(i18n.G("Missing network ACL name"))
 	}
 
 	// Rename the network.
@@ -702,6 +788,14 @@ func (c *cmdNetworkACLDelete) command() *cobra.Command {
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G("Delete network ACLs"))
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworkACLs(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -721,7 +815,7 @@ func (c *cmdNetworkACLDelete) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network ACL name"))
+		return errors.New(i18n.G("Missing network ACL name"))
 	}
 
 	// Delete the network ACL.
@@ -766,11 +860,27 @@ func (c *cmdNetworkACLRule) commandAdd() *cobra.Command {
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G("Add rules to an ACL"))
 	cmd.RunE = c.runAdd
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworkACLs(toComplete)
+		}
+
+		if len(args) == 1 {
+			return []string{"ingress", "egress"}, cobra.ShellCompDirectiveNoFileComp
+		}
+
+		if len(args) == 2 {
+			return c.global.cmpNetworkACLRuleProperties()
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
-// ruleJSONStructFieldMap returns a map of JSON tag names to struct field indices for api.NetworkACLRule.
-func (c *cmdNetworkACLRule) ruleJSONStructFieldMap() map[string]int {
+// networkACLRuleJSONStructFieldMap returns a map of JSON tag names to struct field indices for api.NetworkACLRule.
+func networkACLRuleJSONStructFieldMap() map[string]int {
 	// Use reflect to get field names in rule from json tags.
 	ruleType := reflect.TypeOf(api.NetworkACLRule{})
 	allowedKeys := make(map[string]int, ruleType.NumField())
@@ -802,7 +912,7 @@ func (c *cmdNetworkACLRule) ruleJSONStructFieldMap() map[string]int {
 // parseConfigKeysToRule converts a map of key/value pairs into an api.NetworkACLRule using reflection.
 func (c *cmdNetworkACLRule) parseConfigToRule(config map[string]string) (*api.NetworkACLRule, error) {
 	// Use reflect to get struct field indices in NetworkACLRule for json tags.
-	allowedKeys := c.ruleJSONStructFieldMap()
+	allowedKeys := networkACLRuleJSONStructFieldMap()
 
 	// Initialise new rule.
 	rule := api.NetworkACLRule{}
@@ -841,7 +951,7 @@ func (c *cmdNetworkACLRule) runAdd(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network ACL name"))
+		return errors.New(i18n.G("Missing network ACL name"))
 	}
 
 	// Get config keys from arguments.
@@ -874,7 +984,7 @@ func (c *cmdNetworkACLRule) runAdd(cmd *cobra.Command, args []string) error {
 	} else if args[1] == "egress" {
 		netACL.Egress = append(netACL.Egress, *rule)
 	} else {
-		return fmt.Errorf(i18n.G("The direction argument must be one of: ingress, egress"))
+		return errors.New(i18n.G("The direction argument must be one of: ingress, egress"))
 	}
 
 	return resource.server.UpdateNetworkACL(resource.name, netACL.Writable(), etag)
@@ -888,6 +998,22 @@ func (c *cmdNetworkACLRule) commandRemove() *cobra.Command {
 	cmd.Flags().BoolVar(&c.flagRemoveForce, "force", false, i18n.G("Remove all rules that match"))
 
 	cmd.RunE = c.runRemove
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworkACLs(toComplete)
+		}
+
+		if len(args) == 1 {
+			return []string{"ingress", "egress"}, cobra.ShellCompDirectiveNoFileComp
+		}
+
+		if len(args) == 2 {
+			return c.global.cmpNetworkACLRuleProperties()
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 
 	return cmd
 }
@@ -908,7 +1034,7 @@ func (c *cmdNetworkACLRule) runRemove(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network ACL name"))
+		return errors.New(i18n.G("Missing network ACL name"))
 	}
 
 	// Get config filters from arguments.
@@ -924,7 +1050,7 @@ func (c *cmdNetworkACLRule) runRemove(cmd *cobra.Command, args []string) error {
 	}
 
 	// Use reflect to get struct field indices in NetworkACLRule for json tags.
-	allowedKeys := c.ruleJSONStructFieldMap()
+	allowedKeys := networkACLRuleJSONStructFieldMap()
 
 	// Check the supplied filters match possible fields.
 	for k := range filters {
@@ -963,7 +1089,7 @@ func (c *cmdNetworkACLRule) runRemove(cmd *cobra.Command, args []string) error {
 		for _, r := range rules {
 			if isFilterMatch(&r, filters) {
 				if removed && !c.flagRemoveForce {
-					return nil, fmt.Errorf(i18n.G("Multiple rules match. Use --force to remove them all"))
+					return nil, errors.New(i18n.G("Multiple rules match. Use --force to remove them all"))
 				}
 
 				removed = true
@@ -974,7 +1100,7 @@ func (c *cmdNetworkACLRule) runRemove(cmd *cobra.Command, args []string) error {
 		}
 
 		if !removed {
-			return nil, fmt.Errorf(i18n.G("No matching rule(s) found"))
+			return nil, errors.New(i18n.G("No matching rule(s) found"))
 		}
 
 		return newRules, nil
@@ -996,7 +1122,7 @@ func (c *cmdNetworkACLRule) runRemove(cmd *cobra.Command, args []string) error {
 
 		netACL.Egress = rules
 	} else {
-		return fmt.Errorf(i18n.G("The direction argument must be one of: ingress, egress"))
+		return errors.New(i18n.G("The direction argument must be one of: ingress, egress"))
 	}
 
 	return resource.server.UpdateNetworkACL(resource.name, netACL.Writable(), etag)

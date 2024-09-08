@@ -21,6 +21,7 @@ import (
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/osarch"
 	"github.com/canonical/lxd/shared/revert"
+	"github.com/canonical/lxd/shared/version"
 )
 
 // RBDFormatPrefix is the prefix used in disk paths to identify RBD.
@@ -72,24 +73,6 @@ func BlockFsDetect(dev string) (string, error) {
 	}
 
 	return strings.TrimSpace(out), nil
-}
-
-// IsBlockdev returns boolean indicating whether device is block type.
-func IsBlockdev(path string) bool {
-	// Get a stat struct from the provided path
-	stat := unix.Stat_t{}
-	err := unix.Stat(path, &stat)
-	if err != nil {
-		return false
-	}
-
-	// Check if it's a block device
-	if stat.Mode&unix.S_IFMT == unix.S_IFBLK {
-		return true
-	}
-
-	// Not a device
-	return false
 }
 
 // DiskMount mounts a disk device.
@@ -424,7 +407,7 @@ func DiskVMVirtfsProxyStop(pidPath string) error {
 // Returns UnsupportedError error if the host system or instance does not support virtiosfd, returns normal error
 // type if process cannot be started for other reasons.
 // Returns revert function and listener file handle on success.
-func DiskVMVirtiofsdStart(execPath string, inst instance.Instance, socketPath string, pidPath string, logPath string, sharePath string, idmaps []idmap.IdmapEntry) (func(), net.Listener, error) {
+func DiskVMVirtiofsdStart(kernelVersion version.DottedVersion, inst instance.Instance, socketPath string, pidPath string, logPath string, sharePath string, idmaps []idmap.IdmapEntry) (func(), net.Listener, error) {
 	revert := revert.New()
 	defer revert.Fail()
 
@@ -502,7 +485,20 @@ func DiskVMVirtiofsdStart(execPath string, inst instance.Instance, socketPath st
 	defer func() { _ = unixFile.Close() }()
 
 	// Start the virtiofsd process in non-daemon mode.
-	args := []string{"--fd=3", "-o", fmt.Sprintf("source=%s", sharePath)}
+	args := []string{
+		"--fd=3",
+		// use -o flags for support in wider versions of virtiofsd.
+		"-o", "xattr",
+		"-o", fmt.Sprintf("source=%s", sharePath),
+	}
+
+	// Virtiofsd defaults to namespace sandbox mode which requires pidfd_open support.
+	// This was added in Linux 5.3, so if running an earlier kernel fallback to chroot sandbox mode.
+	minVer, _ := version.NewDottedVersion("5.3.0")
+	if kernelVersion.Compare(minVer) < 0 {
+		args = append(args, "--sandbox=chroot")
+	}
+
 	proc, err := subprocess.NewProcess(cmd, args, logPath, logPath)
 	if err != nil {
 		return nil, nil, err

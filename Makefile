@@ -11,7 +11,7 @@ GOPATH ?= $(shell go env GOPATH)
 CGO_LDFLAGS_ALLOW ?= (-Wl,-wrap,pthread_create)|(-Wl,-z,now)
 SPHINXENV=doc/.sphinx/venv/bin/activate
 SPHINXPIPPATH=doc/.sphinx/venv/bin/pip
-GOMIN=1.22.4
+GOMIN=1.22.5
 
 ifneq "$(wildcard vendor)" ""
 	DQLITE_PATH=$(CURDIR)/vendor/dqlite
@@ -90,6 +90,8 @@ ifneq "$(LXD_OFFLINE)" ""
 	exit 1
 endif
 	go get -t -v -d -u ./...
+	go get github.com/dell/goscaleio@v1.15.0 # Due to pending testing of newer version
+	go get github.com/gorilla/websocket@v1.5.1 # Due to riscv64 crashes in LP
 	go mod tidy -go=$(GOMIN)
 
 	@echo "Dependencies updated"
@@ -118,7 +120,7 @@ endif
 .PHONY: update-metadata
 update-metadata: build
 	@echo "Generating golang documentation metadata"
-	$(GOPATH)/bin/lxd-metadata . --json ./lxd/metadata/configuration.json --txt ./doc/config_options.txt --substitution-db ./doc/substitutions.yaml
+	$(GOPATH)/bin/lxd-metadata . --json ./lxd/metadata/configuration.json --txt ./doc/metadata.txt --substitution-db ./doc/substitutions.yaml
 
 .PHONY: doc
 doc: doc-clean doc-install doc-html doc-objects
@@ -247,8 +249,7 @@ ifeq ($(shell command -v flake8),)
 	exit 1
 endif
 	flake8 test/deps/import-busybox
-	shellcheck --shell bash test/*.sh test/includes/*.sh test/suites/*.sh test/backends/*.sh test/lint/*.sh
-	shellcheck test/extras/*.sh
+	shellcheck test/*.sh test/includes/*.sh test/suites/*.sh test/backends/*.sh test/lint/*.sh test/extras/*.sh
 	NOT_EXEC="$(shell find test/lint -type f -not -executable)"; \
 	if [ -n "$$NOT_EXEC" ]; then \
         echo "lint scripts not executable: $$NOT_EXEC"; \

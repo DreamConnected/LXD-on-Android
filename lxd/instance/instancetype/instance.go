@@ -302,14 +302,32 @@ var InstanceConfigKeysAny = map[string]func(value string) error{
 	//  shortdesc: Whether `/dev/lxd` is present in the instance
 	"security.devlxd": validate.Optional(validate.IsBool),
 
+	// lxdmeta:generate(entities=instance; group=security; key=security.devlxd.images)
+	//
+	// ---
+	//  type: bool
+	//  defaultdesc: `false`
+	//  liveupdate: no
+	//  shortdesc: Controls the availability of the `/1.0/images` API over `devlxd`
+	"security.devlxd.images": validate.Optional(validate.IsBool),
+
 	// lxdmeta:generate(entities=instance; group=security; key=security.protection.delete)
 	//
 	// ---
 	//  type: bool
 	//  defaultdesc: `false`
 	//  liveupdate: yes
-	//  shortdesc: Prevents the instance from being deleted
+	//  shortdesc: Whether to prevent the instance from being deleted
 	"security.protection.delete": validate.Optional(validate.IsBool),
+
+	// lxdmeta:generate(entities=instance; group=security; key=security.protection.start)
+	//
+	// ---
+	//  type: bool
+	//  defaultdesc: `false`
+	//  liveupdate: yes
+	//  shortdesc: Whether to prevent the instance from being started
+	"security.protection.start": validate.Optional(validate.IsBool),
 
 	// lxdmeta:generate(entities=instance; group=snapshots; key=snapshots.schedule)
 	// Specify either a cron expression (`<minute> <hour> <dom> <month> <dow>`), a comma-separated list of schedule aliases (`@hourly`, `@daily`, `@midnight`, `@weekly`, `@monthly`, `@annually`, `@yearly`), or leave empty to disable automatic snapshots.
@@ -666,16 +684,6 @@ var InstanceConfigKeysContainer = map[string]func(value string) error{
 	//  condition: container
 	//  shortdesc: Raw Seccomp configuration
 	"raw.seccomp": validate.IsAny,
-
-	// lxdmeta:generate(entities=instance; group=security; key=security.devlxd.images)
-	//
-	// ---
-	//  type: bool
-	//  defaultdesc: `false`
-	//  liveupdate: no
-	//  condition: container
-	//  shortdesc: Controls the availability of the `/1.0/images` API over `devlxd`
-	"security.devlxd.images": validate.Optional(validate.IsBool),
 
 	// lxdmeta:generate(entities=instance; group=security; key=security.idmap.base)
 	// Setting this option overrides auto-detection.
@@ -1171,15 +1179,6 @@ func ConfigKeyChecker(key string, instanceType Type) (func(value string) error, 
 			return validate.IsAny, nil
 		}
 
-		// lxdmeta:generate(entities=instance; group=volatile; key=volatile.<name>.last_state.ip_addresses)
-		// Comma-separated list of the last used IP addresses of the network device.
-		// ---
-		//  type: string
-		//  shortdesc: Last used IP addresses
-		if strings.HasSuffix(key, ".last_state.ip_addresses") {
-			return validate.IsListOf(validate.IsNetworkAddress), nil
-		}
-
 		// lxdmeta:generate(entities=instance; group=volatile; key=volatile.<name>.apply_quota)
 		// The disk quota is applied the next time the instance starts.
 		// ---
@@ -1199,6 +1198,24 @@ func ConfigKeyChecker(key string, instanceType Type) (func(value string) error, 
 		}
 
 		if strings.HasSuffix(key, ".driver") {
+			return validate.IsAny, nil
+		}
+
+		// lxdmeta:generate(entities=network-physical; group=volatile; key=volatile.last_state.usb.bus)
+		//
+		// --
+		//  type: string
+		//  shortdesc: USB Bus Number
+		if strings.HasSuffix(key, ".bus") {
+			return validate.IsAny, nil
+		}
+
+		// lxdmeta:generate(entities=network-physical; group=volatile; key=volatile.last_state.usb.device)
+		//
+		// --
+		//  type: string
+		//  shortdesc: USB Device Number
+		if strings.HasSuffix(key, ".device") {
 			return validate.IsAny, nil
 		}
 

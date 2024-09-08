@@ -1,4 +1,5 @@
-#!/bin/sh -eu
+#!/bin/bash
+set -eu
 [ -n "${GOPATH:-}" ] && export "PATH=${GOPATH}/bin:${PATH}"
 
 # Don't translate lxc output for parsing in it in tests.
@@ -6,6 +7,11 @@ export LC_ALL="C"
 
 # Force UTC for consistency
 export TZ="UTC"
+
+if [ -z "${NO_PROXY:-}" ]; then
+  # Prevent proxy usage for some host names/IPs (comma-separated list)
+  export NO_PROXY="127.0.0.1"
+fi
 
 export DEBUG=""
 if [ -n "${LXD_VERBOSE:-}" ]; then
@@ -29,7 +35,6 @@ LXD_NETNS=""
 
 import_subdir_files() {
     test "$1"
-    # shellcheck disable=SC2039,3043
     local file
     for file in "$1"/*.sh; do
         # shellcheck disable=SC1090
@@ -158,7 +163,6 @@ run_test() {
   echo "==> TEST BEGIN: ${TEST_CURRENT_DESCRIPTION}"
   START_TIME=$(date +%s)
 
-  # shellcheck disable=SC2039,3043
   local skip=false
 
   # Skip test if requested.
@@ -212,6 +216,7 @@ if [ "${1:-"all"}" != "cluster" ]; then
     run_test test_database_no_disk_space "database out of disk space"
     run_test test_sql "lxd sql"
     run_test test_tls_restrictions "TLS restrictions"
+    run_test test_tls_version "TLS version"
     run_test test_oidc "OpenID Connect"
     run_test test_authorization "Authorization"
     run_test test_certificate_edit "Certificate edit"
@@ -275,6 +280,7 @@ if [ "${1:-"all"}" != "cluster" ]; then
     run_test test_projects_network "projects and networks"
     run_test test_projects_limits "projects limits"
     run_test test_projects_usage "projects usage"
+    run_test test_projects_yaml "projects with yaml initialization"
     run_test test_projects_restrictions "projects restrictions"
     run_test test_container_devices_disk "container devices - disk"
     run_test test_container_devices_disk_restricted "container devices - disk - restricted"
@@ -288,6 +294,7 @@ if [ "${1:-"all"}" != "cluster" ]; then
     run_test test_container_devices_nic_ipvlan "container devices - nic - ipvlan"
     run_test test_container_devices_nic_sriov "container devices - nic - sriov"
     run_test test_container_devices_nic_routed "container devices - nic - routed"
+    run_test test_container_devices_none "container devices - none"
     run_test test_container_devices_infiniband_physical "container devices - infiniband - physical"
     run_test test_container_devices_infiniband_sriov "container devices - infiniband - sriov"
     run_test test_container_devices_proxy "container devices - proxy"
@@ -317,6 +324,7 @@ if [ "${1:-"all"}" != "cluster" ]; then
     run_test test_snap_expiry "snapshot expiry"
     run_test test_snap_schedule "snapshot scheduling"
     run_test test_snap_volume_db_recovery "snapshot volume database record recovery"
+    run_test test_snap_fail "snapshot creation failure"
     run_test test_config_profiles "profiles and configuration"
     run_test test_config_edit "container configuration edit"
     run_test test_property "container property"

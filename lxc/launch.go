@@ -45,6 +45,14 @@ lxc launch ubuntu:24.04 v1 --vm -c limits.cpu=2 -c limits.memory=8GiB -d root,si
 	cmd.Flags().StringVar(&c.flagConsole, "console", "", i18n.G("Immediately attach to the console")+"``")
 	cmd.Flags().Lookup("console").NoOptDefVal = "console"
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) != 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+
+		return c.global.cmpImages(toComplete)
+	}
+
 	return cmd
 }
 
@@ -58,9 +66,14 @@ func (c *cmdLaunch) run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Call the matching code from init
-	d, name, err := c.init.create(conf, args)
+	d, name, err := c.init.create(conf, args, true)
 	if err != nil {
 		return err
+	}
+
+	// Check if the instance was started by the server.
+	if d.HasExtension("instance_create_start") {
+		return nil
 	}
 
 	// Get the remote

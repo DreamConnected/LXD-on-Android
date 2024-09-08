@@ -19,6 +19,9 @@ var rsyncProfileTpl = template.Must(template.New("rsyncProfile").Parse(`#include
 profile "{{ .name }}" flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
 
+  # Allow processes to send us signals by default
+  signal (receive),
+
   capability chown,
   capability dac_override,
   capability dac_read_search,
@@ -175,7 +178,7 @@ func rsyncProfile(sysOS *sys.OS, name string, sourcePath string, dstPath string)
 		execPath = fullPath
 	}
 
-	var sb *strings.Builder = &strings.Builder{}
+	sb := &strings.Builder{}
 	err = rsyncProfileTpl.Execute(sb, map[string]any{
 		"name":        name,
 		"execPath":    execPath,

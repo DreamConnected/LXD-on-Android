@@ -20,7 +20,7 @@ import (
 	"github.com/canonical/lxd/lxd/instance"
 	"github.com/canonical/lxd/lxd/instance/instancetype"
 	"github.com/canonical/lxd/lxd/operations"
-	"github.com/canonical/lxd/lxd/project"
+	"github.com/canonical/lxd/lxd/project/limits"
 	"github.com/canonical/lxd/lxd/request"
 	"github.com/canonical/lxd/lxd/response"
 	"github.com/canonical/lxd/lxd/scriptlet"
@@ -211,13 +211,13 @@ func instancePost(d *Daemon, r *http.Request) response.Response {
 
 			var targetGroupName string
 
-			targetMemberInfo, targetGroupName, err = project.CheckTarget(ctx, s.Authorizer, r, tx, targetProject, target, allMembers)
+			targetMemberInfo, targetGroupName, err = limits.CheckTarget(ctx, s.Authorizer, r, tx, targetProject, target, allMembers)
 			if err != nil {
 				return err
 			}
 
 			if targetMemberInfo == nil {
-				clusterGroupsAllowed := project.GetRestrictedClusterGroups(targetProject)
+				clusterGroupsAllowed := limits.GetRestrictedClusterGroups(targetProject)
 
 				candidateMembers, err = tx.GetCandidateMembers(ctx, allMembers, []int{inst.Architecture()}, targetGroupName, clusterGroupsAllowed, s.GlobalConfig.OfflineThreshold())
 				if err != nil {
@@ -780,14 +780,14 @@ func instancePostClusteringMigrate(s *state.State, r *http.Request, srcPool stor
 			return err
 		}
 
-		err = destOp.Wait()
-		if err != nil {
-			return fmt.Errorf("Instance move to destination failed: %w", err)
-		}
-
 		err = srcOp.Wait(context.Background())
 		if err != nil {
 			return fmt.Errorf("Instance move to destination failed on source: %w", err)
+		}
+
+		err = destOp.Wait()
+		if err != nil {
+			return fmt.Errorf("Instance move to destination failed: %w", err)
 		}
 
 		err = s.DB.Cluster.Transaction(context.Background(), func(ctx context.Context, tx *db.ClusterTx) error {
@@ -874,17 +874,17 @@ func instancePostClusteringMigrate(s *state.State, r *http.Request, srcPool stor
 	return run, nil
 }
 
-// instancePostClusteringMigrateWithCeph handles moving a ceph instance from a source member that is offline.
+// instancePostClusteringMigrateWithRemoteStorage handles moving a remote shared storage instance from a source member that is offline.
 // This function must be run on the target cluster member to move the instance to.
-func instancePostClusteringMigrateWithCeph(s *state.State, r *http.Request, srcPool storagePools.Pool, srcInst instance.Instance, newInstName string, newMember db.NodeInfo, stateful bool) (func(op *operations.Operation) error, error) {
+func instancePostClusteringMigrateWithRemoteStorage(s *state.State, r *http.Request, srcPool storagePools.Pool, srcInst instance.Instance, newInstName string, newMember db.NodeInfo, stateful bool) (func(op *operations.Operation) error, error) {
 	// Sense checks to avoid unexpected behaviour.
-	if srcPool.Driver().Info().Name != "ceph" {
-		return nil, fmt.Errorf("Source instance's storage pool is not of type ceph")
+	if !srcPool.Driver().Info().Remote {
+		return nil, fmt.Errorf("Source instance's storage pool is not remote shared storage")
 	}
 
 	// Check this function is only run on the target member.
 	if s.ServerName != newMember.Name {
-		return nil, fmt.Errorf("Ceph instance move when source member is offline must be run on target member")
+		return nil, fmt.Errorf("Remote shared storage instance move when source member is offline must be run on target member")
 	}
 
 	// Check we can convert the instance to the volume types needed.
@@ -968,24 +968,15 @@ func migrateInstance(s *state.State, r *http.Request, inst instance.Instance, ta
 		return err
 	}
 
-	// In case of live migration, only root disk can be migrated.
-	if req.Live && inst.IsRunning() {
-		for _, rawConfig := range inst.ExpandedDevices() {
-			if rawConfig["type"] == "disk" && !instancetype.IsRootDiskDevice(rawConfig) {
-				return fmt.Errorf("Cannot live migrate instance with attached custom volume")
-			}
-		}
-	}
-
 	// Retrieve storage pool of the source instance.
 	srcPool, err := storagePools.LoadByInstance(s, inst)
 	if err != nil {
 		return fmt.Errorf("Failed loading instance storage pool: %w", err)
 	}
 
-	// Only use instancePostClusteringMigrateWithCeph when source member is offline.
-	if srcMember.IsOffline(s.GlobalConfig.OfflineThreshold()) && srcPool.Driver().Info().Name == "ceph" {
-		f, err := instancePostClusteringMigrateWithCeph(s, r, srcPool, inst, req.Name, newMember, req.Live)
+	// Only use instancePostClusteringMigrateWithRemoteStorage when source member is offline and storage location is remote.
+	if srcMember.IsOffline(s.GlobalConfig.OfflineThreshold()) && srcPool.Driver().Info().Remote {
+		f, err := instancePostClusteringMigrateWithRemoteStorage(s, r, srcPool, inst, req.Name, newMember, req.Live)
 		if err != nil {
 			return err
 		}

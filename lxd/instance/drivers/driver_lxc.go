@@ -41,6 +41,7 @@ import (
 	"github.com/canonical/lxd/lxd/db/cluster"
 	"github.com/canonical/lxd/lxd/db/operationtype"
 	"github.com/canonical/lxd/lxd/device"
+	"github.com/canonical/lxd/lxd/device/cdi"
 	deviceConfig "github.com/canonical/lxd/lxd/device/config"
 	"github.com/canonical/lxd/lxd/device/nictype"
 	"github.com/canonical/lxd/lxd/idmap"
@@ -2053,6 +2054,7 @@ func (d *lxc) startCommon() (string, []func() error, error) {
 	// Create the devices
 	nicID := -1
 	nvidiaDevices := []string{}
+	cdiConfigFiles := []string{}
 
 	sortedDevices := d.expandedDevices.Sorted()
 	startDevices := make([]device.Device, 0, len(sortedDevices))
@@ -2223,6 +2225,10 @@ func (d *lxc) startCommon() (string, []func() error, error) {
 				if entry.Key == device.GPUNvidiaDeviceKey {
 					nvidiaDevices = append(nvidiaDevices, entry.Value)
 				}
+
+				if entry.Key == cdi.CDIHookDefinitionKey {
+					cdiConfigFiles = append(cdiConfigFiles, entry.Value)
+				}
 			}
 		}
 	}
@@ -2232,6 +2238,13 @@ func (d *lxc) startCommon() (string, []func() error, error) {
 		err = lxcSetConfigItem(cc, "lxc.environment", fmt.Sprintf("NVIDIA_VISIBLE_DEVICES=%s", strings.Join(nvidiaDevices, ",")))
 		if err != nil {
 			return "", nil, fmt.Errorf("Unable to set NVIDIA_VISIBLE_DEVICES in LXC environment: %w", err)
+		}
+	}
+
+	if len(cdiConfigFiles) > 0 {
+		err = lxcSetConfigItem(cc, "lxc.hook.mount", fmt.Sprintf("%s callhook %s %s %s startmountns --devicesRootFolder %s %s", d.state.OS.ExecPath, shared.VarPath(""), strconv.Quote(d.Project().Name), strconv.Quote(d.Name()), d.DevicesPath(), strings.Join(cdiConfigFiles, " ")))
+		if err != nil {
+			return "", nil, fmt.Errorf("Unable to set the startmountns callhook to process CDI hooks files (%q) for instance %q in project %q: %w", strings.Join(cdiConfigFiles, ","), d.Name(), d.Project().Name, err)
 		}
 	}
 
@@ -2580,6 +2593,11 @@ func (d *lxc) validateStartup(statusCode api.StatusCode) error {
 	// Ensure nesting is turned on for images that require nesting.
 	if shared.IsTrue(d.localConfig["image.requirements.nesting"]) && shared.IsFalseOrEmpty(d.expandedConfig["security.nesting"]) {
 		return fmt.Errorf("The image used by this instance requires nesting. Please set security.nesting=true on the instance")
+	}
+
+	// Check if instance is start protected.
+	if shared.IsTrue(d.expandedConfig["security.protection.start"]) {
+		return fmt.Errorf("Instance is protected from being started")
 	}
 
 	return nil
@@ -2954,16 +2972,25 @@ func (d *lxc) onStop(args map[string]string) error {
 		d.cleanupDevices(false, "")
 
 		// Remove directory ownership (to avoid issue if uidmap is re-used)
+		// Fails on zfs when the dataset is full due to CoW
 		err := os.Chown(d.Path(), 0, 0)
 		if err != nil {
-			op.Done(fmt.Errorf("Failed clearing ownership: %w", err))
-			return
+			if !strings.Contains(err.Error(), "disk quota exceeded") {
+				op.Done(fmt.Errorf("Failed clearing ownership: %w", err))
+				return
+			}
+
+			d.logger.Error("Failed clearing ownership; skipping", logger.Ctx{"err": err})
 		}
 
 		err = os.Chmod(d.Path(), 0100)
 		if err != nil {
-			op.Done(fmt.Errorf("Failed clearing permissions: %w", err))
-			return
+			if !strings.Contains(err.Error(), "disk quota exceeded") {
+				op.Done(fmt.Errorf("Failed clearing permissions: %w", err))
+				return
+			}
+
+			d.logger.Error("Failed clearing permissions; skipping", logger.Ctx{"err": err})
 		}
 
 		// Stop the storage for this container
@@ -3726,7 +3753,7 @@ func (d *lxc) delete(force bool) error {
 	}
 
 	if !force && shared.IsTrue(d.expandedConfig["security.protection.delete"]) && !d.IsSnapshot() {
-		err := fmt.Errorf("Instance is protected")
+		err := fmt.Errorf("Instance is protected from being deleted")
 		d.logger.Warn("Failed to delete instance", logger.Ctx{"err": err})
 		return err
 	}
@@ -6078,15 +6105,9 @@ func (d *lxc) MigrateReceive(args instance.MigrateReceiveArgs) error {
 
 		// At this point we have already figured out the parent container's root
 		// disk device so we can simply retrieve it from the expanded devices.
-		parentStoragePool := ""
-		parentExpandedDevices := d.ExpandedDevices()
-		parentLocalRootDiskDeviceKey, parentLocalRootDiskDevice, _ := instancetype.GetRootDiskDevice(parentExpandedDevices.CloneNative())
-		if parentLocalRootDiskDeviceKey != "" {
-			parentStoragePool = parentLocalRootDiskDevice["pool"]
-		}
-
-		if parentStoragePool == "" {
-			return fmt.Errorf("Instance's root device is missing the pool property")
+		parentStoragePool, err := d.getParentStoragePool()
+		if err != nil {
+			return err
 		}
 
 		// A zero length Snapshots slice indicates volume only migration in
@@ -6319,6 +6340,52 @@ func (d *lxc) MigrateReceive(args instance.MigrateReceiveArgs) error {
 		revert.Success()
 		return nil
 	}
+}
+
+// ConversionReceive establishes the filesystem connection, transfers the filesystem / block volume,
+// and creates an instance from it.
+func (d *lxc) ConversionReceive(args instance.ConversionReceiveArgs) error {
+	d.logger.Info("Conversion receive starting")
+	defer d.logger.Info("Conversion receive stopped")
+
+	// Wait for essential migration connections before negotiation.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+
+	filesystemConn, err := args.FilesystemConn(ctx)
+	if err != nil {
+		return err
+	}
+
+	pool, err := storagePools.LoadByInstance(d.state, d)
+	if err != nil {
+		return err
+	}
+
+	// Ensure that configured root disk device is valid.
+	_, err = d.getParentStoragePool()
+	if err != nil {
+		return err
+	}
+
+	volTargetArgs := migration.VolumeTargetArgs{
+		IndexHeaderVersion: 0,
+		Name:               d.Name(),
+		MigrationType: migration.Type{
+			FSType:   migration.MigrationFSType_RSYNC,
+			Features: []string{"xattrs", "delete", "compress"},
+		},
+		TrackProgress:     true,                // Use a progress tracker on receiver to get progress information.
+		VolumeSize:        args.SourceDiskSize, // Block volume size override.
+		ConversionOptions: nil,                 // Containers do not support conversion options.
+	}
+
+	err = pool.CreateInstanceFromConversion(d, filesystemConn, volTargetArgs, d.op)
+	if err != nil {
+		return fmt.Errorf("Failed creating instance on target: %w", err)
+	}
+
+	return nil
 }
 
 // Migrate migrates the instance to another node.
@@ -7805,36 +7872,6 @@ func (d *lxc) InsertSeccompUnixDevice(prefix string, m deviceConfig.Device, pid 
 	return d.insertMountLXD(devPath, tgtPath, "none", unix.MS_BIND, pid, idmap.IdmapStorageNone)
 }
 
-func (d *lxc) removeUnixDevices() error {
-	// Check that we indeed have devices to remove
-	if !shared.PathExists(d.DevicesPath()) {
-		return nil
-	}
-
-	// Load the directory listing
-	dents, err := os.ReadDir(d.DevicesPath())
-	if err != nil {
-		return err
-	}
-
-	// Go through all the unix devices
-	for _, f := range dents {
-		// Skip non-Unix devices
-		if !strings.HasPrefix(f.Name(), "forkmknod.unix.") && !strings.HasPrefix(f.Name(), "unix.") && !strings.HasPrefix(f.Name(), "infiniband.unix.") {
-			continue
-		}
-
-		// Remove the entry
-		devicePath := filepath.Join(d.DevicesPath(), f.Name())
-		err := os.Remove(devicePath)
-		if err != nil {
-			d.logger.Error("Failed removing unix device", logger.Ctx{"err": err, "path": devicePath})
-		}
-	}
-
-	return nil
-}
-
 // FillNetworkDevice takes a nic or infiniband device type and enriches it with automatically
 // generated name and hwaddr properties if these are missing from the device.
 func (d *lxc) FillNetworkDevice(name string, m deviceConfig.Device) (deviceConfig.Device, error) {
@@ -7970,39 +8007,6 @@ func (d *lxc) FillNetworkDevice(name string, m deviceConfig.Device) (deviceConfi
 	}
 
 	return newDevice, nil
-}
-
-func (d *lxc) removeDiskDevices() error {
-	// Check that we indeed have devices to remove
-	if !shared.PathExists(d.DevicesPath()) {
-		return nil
-	}
-
-	// Load the directory listing
-	dents, err := os.ReadDir(d.DevicesPath())
-	if err != nil {
-		return err
-	}
-
-	// Go through all the unix devices
-	for _, f := range dents {
-		// Skip non-disk devices
-		if !strings.HasPrefix(f.Name(), "disk.") {
-			continue
-		}
-
-		// Always try to unmount the host side
-		_ = unix.Unmount(filepath.Join(d.DevicesPath(), f.Name()), unix.MNT_DETACH)
-
-		// Remove the entry
-		diskPath := filepath.Join(d.DevicesPath(), f.Name())
-		err := os.Remove(diskPath)
-		if err != nil {
-			d.logger.Error("Failed to remove disk device path", logger.Ctx{"err": err, "path": diskPath})
-		}
-	}
-
-	return nil
 }
 
 // IsFrozen returns if instance is frozen.

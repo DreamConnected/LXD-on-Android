@@ -160,14 +160,14 @@ jobs:
         run: |
           set -eux
           sudo chmod o+w ./lxd/metadata/configuration.json
-          sudo chmod o+w ./doc/config_options.txt
+          sudo chmod o+w ./doc/metadata.txt
           sudo chmod o+w ./po/*
           make static-analysis
 
       - name: Unit tests (all)
         run: |
           set -eux
-          sudo --preserve-env=CGO_CFLAGS,CGO_LDFLAGS,CGO_LDFLAGS_ALLOW,LD_LIBRARY_PATH LD_LIBRARY_PATH=${LD_LIBRARY_PATH} env "PATH=${PATH}" go test ./...
+          sudo --preserve-env=CGO_CFLAGS,CGO_LDFLAGS,CGO_LDFLAGS_ALLOW,LD_LIBRARY_PATH LD_LIBRARY_PATH=${LD_LIBRARY_PATH} env "PATH=${PATH}" go test -v ./...
 
   system-tests:
     env:

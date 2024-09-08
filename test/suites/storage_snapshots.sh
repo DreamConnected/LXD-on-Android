@@ -2,7 +2,6 @@ test_storage_volume_snapshots() {
   ensure_import_testimage
   ensure_has_localhost_remote "${LXD_ADDR}"
 
-  # shellcheck disable=2039,3043
   local LXD_STORAGE_DIR lxd_backend
 
   lxd_backend=$(storage_backend "$LXD_DIR")
@@ -10,7 +9,6 @@ test_storage_volume_snapshots() {
   chmod +x "${LXD_STORAGE_DIR}"
   spawn_lxd "${LXD_STORAGE_DIR}" false
 
-  # shellcheck disable=2039,3043
   local storage_pool storage_volume
   storage_pool="lxdtest-$(basename "${LXD_STORAGE_DIR}")-pool"
   storage_pool2="${storage_pool}2"
@@ -34,6 +32,18 @@ test_storage_volume_snapshots() {
   lxc storage volume list "${storage_pool}" |  grep "${storage_volume}/snap0"
   lxc storage volume show "${storage_pool}" "${storage_volume}/snap0" | grep 'name: snap0'
   lxc storage volume show "${storage_pool}" "${storage_volume}/snap0" | grep 'expires_at: 0001-01-01T00:00:00Z'
+
+  # Create a snapshot with an expiry date using a YAML configuration
+  expiry_date_in_one_minute=$(date -u -d '+10 minute' '+%Y-%m-%dT%H:%M:%SZ')
+  lxc storage volume snapshot "${storage_pool}" "${storage_volume}" yaml_volume_snapshot <<EOF
+description: foodesc
+expires_at: ${expiry_date_in_one_minute}
+EOF
+  # Check that the expiry date is set correctly
+  lxc storage volume show "${storage_pool}" "${storage_volume}/yaml_volume_snapshot" | grep "expires_at: ${expiry_date_in_one_minute}"
+  lxc storage volume show "${storage_pool}" "${storage_volume}/yaml_volume_snapshot" | grep "description: foodesc"
+  # Delete the snapshot
+  lxc storage volume delete "${storage_pool}" "${storage_volume}/yaml_volume_snapshot"
 
   # Check if the snapshot has an UUID.
   [ -n "$(lxc storage volume get "${storage_pool}" "${storage_volume}/snap0" volatile.uuid)" ]

@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 
 	petname "github.com/dustinkirkland/golang-petname"
@@ -27,6 +28,7 @@ import (
 	"github.com/canonical/lxd/lxd/instance/operationlock"
 	"github.com/canonical/lxd/lxd/operations"
 	"github.com/canonical/lxd/lxd/project"
+	"github.com/canonical/lxd/lxd/project/limits"
 	"github.com/canonical/lxd/lxd/request"
 	"github.com/canonical/lxd/lxd/response"
 	"github.com/canonical/lxd/lxd/scriptlet"
@@ -52,7 +54,7 @@ func ensureDownloadedImageFitWithinBudget(s *state.State, r *http.Request, op *o
 
 	var budget int64
 	err = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-		budget, err = project.GetImageSpaceBudget(s.GlobalConfig, tx, p.Name)
+		budget, err = limits.GetImageSpaceBudget(s.GlobalConfig, tx, p.Name)
 		return err
 	})
 	if err != nil {
@@ -123,7 +125,13 @@ func createFromImage(s *state.State, r *http.Request, p api.Project, profiles []
 			return err
 		}
 
-		return instanceCreateFromImage(s, img, args, op)
+		// Actually create the instance.
+		err = instanceCreateFromImage(s, img, args, op)
+		if err != nil {
+			return err
+		}
+
+		return instanceCreateFinish(s, req, args)
 	}
 
 	resources := map[string][]api.URL{}
@@ -174,8 +182,13 @@ func createFromNone(s *state.State, r *http.Request, projectName string, profile
 	}
 
 	run := func(op *operations.Operation) error {
+		// Actually create the instance.
 		_, err := instanceCreateAsEmpty(s, args)
-		return err
+		if err != nil {
+			return err
+		}
+
+		return instanceCreateFinish(s, req, args)
 	}
 
 	resources := map[string][]api.URL{}
@@ -214,12 +227,6 @@ func createFromMigration(s *state.State, r *http.Request, projectName string, pr
 		return response.NotImplemented(fmt.Errorf("Mode %q not implemented", req.Source.Mode))
 	}
 
-	// Parse the architecture name
-	architecture, err := osarch.ArchitectureId(req.Architecture)
-	if err != nil {
-		return response.BadRequest(err)
-	}
-
 	dbType, err := instancetype.New(string(req.Type))
 	if err != nil {
 		return response.BadRequest(err)
@@ -229,55 +236,9 @@ func createFromMigration(s *state.State, r *http.Request, projectName string, pr
 		return response.BadRequest(fmt.Errorf("Instance type not supported %q", req.Type))
 	}
 
-	// Prepare the instance creation request.
-	args := db.InstanceArgs{
-		Project:      projectName,
-		Architecture: architecture,
-		BaseImage:    req.Source.BaseImage,
-		Config:       req.Config,
-		Type:         dbType,
-		Devices:      deviceConfig.NewDevices(req.Devices),
-		Description:  req.Description,
-		Ephemeral:    req.Ephemeral,
-		Name:         req.Name,
-		Profiles:     profiles,
-		Stateful:     req.Stateful,
-	}
-
-	storagePool, storagePoolProfile, localRootDiskDeviceKey, localRootDiskDevice, resp := instanceFindStoragePool(s, projectName, req)
+	storagePool, args, resp := setupInstanceArgs(s, dbType, projectName, profiles, req)
 	if resp != nil {
 		return resp
-	}
-
-	if storagePool == "" {
-		return response.BadRequest(fmt.Errorf("Can't find a storage pool for the instance to use"))
-	}
-
-	if localRootDiskDeviceKey == "" && storagePoolProfile == "" {
-		// Give the container it's own local root disk device with a pool property.
-		rootDev := map[string]string{}
-		rootDev["type"] = "disk"
-		rootDev["path"] = "/"
-		rootDev["pool"] = storagePool
-		if args.Devices == nil {
-			args.Devices = deviceConfig.Devices{}
-		}
-
-		// Make sure that we do not overwrite a device the user is currently using under the
-		// name "root".
-		rootDevName := "root"
-		for i := 0; i < 100; i++ {
-			if args.Devices[rootDevName] == nil {
-				break
-			}
-
-			rootDevName = fmt.Sprintf("root%d", i)
-			continue
-		}
-
-		args.Devices[rootDevName] = rootDev
-	} else if localRootDiskDeviceKey != "" && localRootDiskDevice["pool"] == "" {
-		args.Devices[localRootDiskDeviceKey]["pool"] = storagePool
 	}
 
 	var inst instance.Instance
@@ -326,7 +287,7 @@ func createFromMigration(s *state.State, r *http.Request, projectName string, pr
 		// Note: At this stage we do not yet know if snapshots are going to be received and so we cannot
 		// create their DB records. This will be done if needed in the migrationSink.Do() function called
 		// as part of the operation below.
-		inst, instOp, cleanup, err = instance.CreateInternal(s, args, true)
+		inst, instOp, cleanup, err = instance.CreateInternal(s, *args, true)
 		if err != nil {
 			return response.InternalError(fmt.Errorf("Failed creating instance record: %w", err))
 		}
@@ -354,15 +315,15 @@ func createFromMigration(s *state.State, r *http.Request, projectName string, pr
 	}
 
 	migrationArgs := migrationSinkArgs{
-		URL:                   req.Source.Operation,
-		Dialer:                dialer,
-		Instance:              inst,
-		Secrets:               req.Source.Websockets,
-		Push:                  push,
-		Live:                  req.Source.Live,
-		InstanceOnly:          instanceOnly,
-		ClusterMoveSourceName: clusterMoveSourceName,
-		Refresh:               req.Source.Refresh,
+		url:                   req.Source.Operation,
+		dialer:                dialer,
+		instance:              inst,
+		secrets:               req.Source.Websockets,
+		push:                  push,
+		live:                  req.Source.Live,
+		instanceOnly:          instanceOnly,
+		clusterMoveSourceName: clusterMoveSourceName,
+		refresh:               req.Source.Refresh,
 	}
 
 	sink, err := newMigrationSink(&migrationArgs)
@@ -410,6 +371,112 @@ func createFromMigration(s *state.State, r *http.Request, projectName string, pr
 		if err != nil {
 			return response.InternalError(err)
 		}
+	}
+
+	revert.Success()
+	return operations.OperationResponse(op)
+}
+
+// createFromConversion receives the root disk (container FS or VM block volume) from the client and creates an
+// instance from it. Conversion options also allow the uploaded image to be converted into a raw format.
+func createFromConversion(s *state.State, r *http.Request, projectName string, profiles []api.Profile, req *api.InstancesPost) response.Response {
+	if s.DB.Cluster.LocalNodeIsEvacuated() {
+		return response.Forbidden(fmt.Errorf("Cluster member is evacuated"))
+	}
+
+	// Validate migration mode.
+	if req.Source.Mode != "push" {
+		return response.NotImplemented(fmt.Errorf("Mode %q not implemented", req.Source.Mode))
+	}
+
+	dbType, err := instancetype.New(string(req.Type))
+	if err != nil {
+		return response.BadRequest(err)
+	}
+
+	// Only virtual machines support additional conversion options.
+	if dbType != instancetype.VM && len(req.Source.ConversionOptions) > 0 {
+		return response.BadRequest(fmt.Errorf("Conversion options can only be used with virtual machines. Instance type %q does not support conversion options", req.Type))
+	}
+
+	// Validate conversion options.
+	for _, opt := range req.Source.ConversionOptions {
+		if !slices.Contains([]string{"format", "virtio"}, opt) {
+			return response.BadRequest(fmt.Errorf("Invalid conversion option %q", opt))
+		}
+	}
+
+	storagePool, args, resp := setupInstanceArgs(s, dbType, projectName, profiles, req)
+	if resp != nil {
+		return resp
+	}
+
+	revert := revert.New()
+	defer revert.Fail()
+
+	_, err = storagePools.LoadByName(s, storagePool)
+	if err != nil {
+		return response.InternalError(err)
+	}
+
+	// Create the instance DB record for main instance.
+	inst, instOp, cleanup, err := instance.CreateInternal(s, *args, true)
+	if err != nil {
+		return response.InternalError(fmt.Errorf("Failed creating instance record: %w", err))
+	}
+
+	revert.Add(cleanup)
+	if err != nil {
+		return response.SmartError(fmt.Errorf("Failed getting exclusive access to instance: %w", err))
+	}
+
+	revert.Add(func() { instOp.Done(err) })
+
+	conversionArgs := conversionSinkArgs{
+		url:               req.Source.Operation,
+		secrets:           req.Source.Websockets,
+		sourceDiskSize:    req.Source.SourceDiskSize,
+		conversionOptions: req.Source.ConversionOptions,
+		instance:          inst,
+	}
+
+	sink, err := newConversionSink(&conversionArgs)
+	if err != nil {
+		return response.InternalError(err)
+	}
+
+	// Copy reverter so far so we can use it inside run after this function has finished.
+	runRevert := revert.Clone()
+
+	run := func(op *operations.Operation) error {
+		defer runRevert.Fail()
+
+		sink.instance.SetOperation(op)
+
+		// And finally run the migration.
+		err = sink.Do(s, instOp)
+		if err != nil {
+			err = fmt.Errorf("Error transferring instance data: %w", err)
+			instOp.Done(err) // Complete operation that was created earlier, to release lock.
+
+			return err
+		}
+
+		instOp.Done(nil) // Complete operation that was created earlier, to release lock.
+		runRevert.Success()
+		return nil
+	}
+
+	resources := map[string][]api.URL{}
+	resources["instances"] = []api.URL{*api.NewURL().Path(version.APIVersion, "instances", req.Name)}
+
+	if dbType == instancetype.Container {
+		resources["containers"] = resources["instances"]
+	}
+
+	op, err := operations.OperationCreate(s, projectName, operations.OperationClassWebsocket, operationtype.InstanceCreate, resources, sink.Metadata(), run, nil, sink.Connect, r)
+	if err != nil {
+		return response.InternalError(err)
 	}
 
 	revert.Success()
@@ -547,6 +614,7 @@ func createFromCopy(s *state.State, r *http.Request, projectName string, profile
 	}
 
 	run := func(op *operations.Operation) error {
+		// Actually create the instance.
 		_, err := instanceCreateAsCopy(s, instanceCreateAsCopyOpts{
 			sourceInstance:       source,
 			targetInstance:       args,
@@ -559,7 +627,7 @@ func createFromCopy(s *state.State, r *http.Request, projectName string, profile
 			return err
 		}
 
-		return nil
+		return instanceCreateFinish(s, req, args)
 	}
 
 	resources := map[string][]api.URL{}
@@ -646,15 +714,16 @@ func createFromBackup(s *state.State, r *http.Request, projectName string, data 
 	}
 
 	// Check project permissions.
+	var req api.InstancesPost
 	err = s.DB.Cluster.Transaction(s.ShutdownCtx, func(ctx context.Context, tx *db.ClusterTx) error {
-		req := api.InstancesPost{
+		req = api.InstancesPost{
 			InstancePut: bInfo.Config.Container.Writable(),
 			Name:        bInfo.Name,
 			Source:      api.InstanceSource{}, // Only relevant for "copy" or "migration", but may not be nil.
 			Type:        api.InstanceType(bInfo.Config.Container.Type),
 		}
 
-		return project.AllowInstanceCreation(s.GlobalConfig, tx, projectName, req)
+		return limits.AllowInstanceCreation(s.GlobalConfig, tx, projectName, req)
 	})
 	if err != nil {
 		return response.SmartError(err)
@@ -783,7 +852,8 @@ func createFromBackup(s *state.State, r *http.Request, projectName string, data 
 		}
 
 		runRevert.Success()
-		return nil
+
+		return instanceCreateFinish(s, &req, db.InstanceArgs{Name: bInfo.Name, Project: bInfo.Project})
 	}
 
 	resources := map[string][]api.URL{}
@@ -796,6 +866,68 @@ func createFromBackup(s *state.State, r *http.Request, projectName string, data 
 
 	revert.Success()
 	return operations.OperationResponse(op)
+}
+
+// setupInstanceArgs sets the database instance arguments and determines the storage pool to use.
+func setupInstanceArgs(s *state.State, instType instancetype.Type, projectName string, profiles []api.Profile, req *api.InstancesPost) (storagePool string, instArgs *db.InstanceArgs, resp response.Response) {
+	// Parse the architecture name
+	architecture, err := osarch.ArchitectureId(req.Architecture)
+	if err != nil {
+		return "", nil, response.BadRequest(err)
+	}
+
+	// Prepare the instance creation request.
+	args := db.InstanceArgs{
+		Project:      projectName,
+		Architecture: architecture,
+		BaseImage:    req.Source.BaseImage,
+		Config:       req.Config,
+		Type:         instType,
+		Devices:      deviceConfig.NewDevices(req.Devices),
+		Description:  req.Description,
+		Ephemeral:    req.Ephemeral,
+		Name:         req.Name,
+		Profiles:     profiles,
+		Stateful:     req.Stateful,
+	}
+
+	storagePool, storagePoolProfile, localRootDiskDeviceKey, localRootDiskDevice, resp := instanceFindStoragePool(s, projectName, req)
+	if resp != nil {
+		return "", nil, resp
+	}
+
+	if storagePool == "" {
+		return "", nil, response.BadRequest(fmt.Errorf("Can't find a storage pool for the instance to use"))
+	}
+
+	if localRootDiskDeviceKey == "" && storagePoolProfile == "" {
+		// Give the instance it's own local root disk device with a pool property.
+		rootDev := map[string]string{}
+		rootDev["type"] = "disk"
+		rootDev["path"] = "/"
+		rootDev["pool"] = storagePool
+		if args.Devices == nil {
+			args.Devices = deviceConfig.Devices{}
+		}
+
+		// Make sure that we do not overwrite a device the user is currently using
+		// under the name "root".
+		rootDevName := "root"
+		for i := 0; i < 100; i++ {
+			if args.Devices[rootDevName] == nil {
+				break
+			}
+
+			rootDevName = fmt.Sprintf("root%d", i)
+			continue
+		}
+
+		args.Devices[rootDevName] = rootDev
+	} else if localRootDiskDeviceKey != "" && localRootDiskDevice["pool"] == "" {
+		args.Devices[localRootDiskDeviceKey]["pool"] = storagePool
+	}
+
+	return storagePool, &args, nil
 }
 
 // swagger:operation POST /1.0/instances instances instances_post
@@ -953,7 +1085,7 @@ func instancesPost(d *Daemon, r *http.Request) response.Response {
 			}
 
 			// Check if the given target is allowed and try to resolve the right member or group
-			targetMemberInfo, targetGroupName, err = project.CheckTarget(ctx, s.Authorizer, r, tx, targetProject, target, allMembers)
+			targetMemberInfo, targetGroupName, err = limits.CheckTarget(ctx, s.Authorizer, r, tx, targetProject, target, allMembers)
 			if err != nil {
 				return err
 			}
@@ -1101,20 +1233,18 @@ func instancesPost(d *Daemon, r *http.Request) response.Response {
 				}
 			}
 
-			clusterGroupsAllowed := project.GetRestrictedClusterGroups(targetProject)
+			clusterGroupsAllowed := limits.GetRestrictedClusterGroups(targetProject)
 
 			candidateMembers, err = tx.GetCandidateMembers(ctx, allMembers, architectures, targetGroupName, clusterGroupsAllowed, s.GlobalConfig.OfflineThreshold())
 			if err != nil {
 				return err
 			}
-
-			return nil
 		}
 
 		if !clusterNotification {
 			// Check that the project's limits are not violated. Note this check is performed after
 			// automatically generated config values (such as ones from an InstanceType) have been set.
-			err = project.AllowInstanceCreation(s.GlobalConfig, tx, targetProjectName, req)
+			err = limits.AllowInstanceCreation(s.GlobalConfig, tx, targetProjectName, req)
 			if err != nil {
 				return err
 			}
@@ -1198,6 +1328,8 @@ func instancesPost(d *Daemon, r *http.Request) response.Response {
 		return createFromNone(s, r, targetProjectName, profiles, &req)
 	case "migration":
 		return createFromMigration(s, r, targetProjectName, profiles, &req)
+	case "conversion":
+		return createFromConversion(s, r, targetProjectName, profiles, &req)
 	case "copy":
 		return createFromCopy(s, r, targetProjectName, profiles, &req)
 	default:
@@ -1368,4 +1500,20 @@ func clusterCopyContainerInternal(s *state.State, r *http.Request, source instan
 
 	// Run the migration
 	return createFromMigration(s, nil, projectName, profiles, req)
+}
+
+// instanceCreateFinish finalizes the creation process of an instance by starting it based on
+// the Start field of the request.
+func instanceCreateFinish(s *state.State, req *api.InstancesPost, args db.InstanceArgs) error {
+	if req == nil || !req.Start {
+		return nil
+	}
+
+	// Start the instance.
+	inst, err := instance.LoadByProjectAndName(s, args.Project, args.Name)
+	if err != nil {
+		return fmt.Errorf("Failed to load the instance: %w", err)
+	}
+
+	return inst.Start(false)
 }

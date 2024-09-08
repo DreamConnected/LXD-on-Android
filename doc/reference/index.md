@@ -17,6 +17,7 @@ You should also be aware of the supported architectures, the available image ser
 /architectures
 /reference/remote_image_servers
 /reference/image_format
+/guest-os-compatibility
 Container environment </container-environment>
 ```
 
@@ -53,6 +54,17 @@ You should also regularly {ref}`monitor the server metrics <metrics>`.
 
 Production server settings </reference/server_settings>
 /reference/provided_metrics
+```
+
+## Fine-grained permissions
+
+If you are managing user access via {ref}`fine-grained-authorization`, check which {ref}`permissions <permissions>` can be assigned to groups.
+
+```{toctree}
+:titlesonly:
+:maxdepth: 1
+
+/reference/permissions
 ```
 
 (reference-api)=

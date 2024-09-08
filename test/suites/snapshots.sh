@@ -17,7 +17,6 @@ test_snapshots() {
 }
 
 snapshots() {
-  # shellcheck disable=2039,3043
   local lxd_backend
   lxd_backend=$(storage_backend "$LXD_DIR")
   pool="$1"
@@ -53,6 +52,16 @@ snapshots() {
   if [ "$lxd_backend" = "dir" ]; then
     [ -d "${LXD_DIR}/snapshots/foo/tester" ]
   fi
+
+  # Create a snapshot with an expiry date specified in a YAML
+  expiry_date_in_one_minute=$(date -u -d '+10 minute' '+%Y-%m-%dT%H:%M:%SZ')
+  lxc snapshot foo tester_yaml <<EOF
+expires_at: ${expiry_date_in_one_minute}
+EOF
+  # Check that the expiry date is set correctly
+  lxc config show foo/tester_yaml | grep "expires_at: ${expiry_date_in_one_minute}"
+  # Delete the snapshot
+  lxc delete foo/tester_yaml
 
   lxc copy foo/tester foosnap1
   # FIXME: make this backend agnostic
@@ -126,7 +135,6 @@ test_snap_restore() {
 }
 
 snap_restore() {
-  # shellcheck disable=2039,3043
   local lxd_backend
   lxd_backend=$(storage_backend "$LXD_DIR")
   pool="$1"
@@ -343,7 +351,6 @@ restore_and_compare_fs() {
 }
 
 test_snap_expiry() {
-  # shellcheck disable=2039,3043
   local lxd_backend
   lxd_backend=$(storage_backend "$LXD_DIR")
 
@@ -369,7 +376,6 @@ test_snap_expiry() {
 }
 
 test_snap_schedule() {
-  # shellcheck disable=2039,3043
   local lxd_backend
   lxd_backend=$(storage_backend "$LXD_DIR")
 
@@ -396,7 +402,6 @@ test_snap_schedule() {
 }
 
 test_snap_volume_db_recovery() {
-  # shellcheck disable=2039,3043
   local lxd_backend
   lxd_backend=$(storage_backend "$LXD_DIR")
 
@@ -419,4 +424,24 @@ test_snap_volume_db_recovery() {
   lxc storage volume show "${poolName}" container/c1/snap1 | grep "Auto repaired"
   lxc start c1
   lxc delete -f c1
+}
+
+test_snap_fail() {
+  local lxd_backend
+  lxd_backend=$(storage_backend "$LXD_DIR")
+
+  ensure_import_testimage
+
+  if [ "${lxd_backend}" = "zfs" ]; then
+    # Containers should fail to snapshot when root is full (can't write to backup.yaml)
+    lxc launch testimage c1 --device root,size=2MiB
+    lxc exec c1 -- dd if=/dev/urandom of=/root/big.bin count=100 bs=100K || true
+
+    ! lxc snapshot c1 || false
+
+    # Make sure that the snapshot creation failed (c1 has 0 snapshots)
+    [ "$(lxc ls --columns nS --format csv | awk --field-separator , '/c1/{print $2}')" -eq 0 ]
+
+    lxc delete --force c1
+  fi
 }

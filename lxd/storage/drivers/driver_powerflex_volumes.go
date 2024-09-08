@@ -11,10 +11,10 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/canonical/lxd/lxd/backup"
-	deviceConfig "github.com/canonical/lxd/lxd/device/config"
 	"github.com/canonical/lxd/lxd/instancewriter"
 	"github.com/canonical/lxd/lxd/migration"
 	"github.com/canonical/lxd/lxd/operations"
+	"github.com/canonical/lxd/lxd/storage/block"
 	"github.com/canonical/lxd/lxd/storage/filesystem"
 	"github.com/canonical/lxd/shared"
 	"github.com/canonical/lxd/shared/api"
@@ -552,7 +552,7 @@ func (d *powerflex) SetVolumeQuota(vol Volume, size string, allowUnsafeResize bo
 
 	defer cleanup()
 
-	oldSizeBytes, err := BlockDiskSizeBytes(devPath)
+	oldSizeBytes, err := block.DiskSizeBytes(devPath)
 	if err != nil {
 		return fmt.Errorf("Error getting current size: %w", err)
 	}
@@ -648,8 +648,8 @@ func (d *powerflex) ListVolumes() ([]Volume, error) {
 }
 
 // DefaultVMBlockFilesystemSize returns the size of a VM root device block volume's associated filesystem volume.
-func (d *powerflex) DefaultVMBlockFilesystemSize() string {
-	return deviceConfig.DefaultVMPowerFlexBlockFilesystemSize
+func (d *powerflex) defaultVMBlockFilesystemSize() string {
+	return powerFlexDefaultSize
 }
 
 // MountVolume mounts a volume and increments ref counter. Please call UnmountVolume() when done with the volume.

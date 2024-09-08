@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -92,18 +93,46 @@ func (c *cmdProjectCreate) command() *cobra.Command {
 	cmd.Short = i18n.G("Create projects")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(
 		`Create projects`))
+	cmd.Example = cli.FormatSection("", i18n.G(`lxc project create p1
+
+lxc project create p1 < config.yaml
+    Create a project with configuration from config.yaml`))
+
 	cmd.Flags().StringArrayVarP(&c.flagConfig, "config", "c", nil, i18n.G("Config key/value to apply to the new project")+"``")
 
 	cmd.RunE = c.run
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpRemotes(false)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 
 	return cmd
 }
 
 func (c *cmdProjectCreate) run(cmd *cobra.Command, args []string) error {
+	var stdinData api.ProjectPut
+
 	// Quick checks.
 	exit, err := c.global.CheckArgs(cmd, args, 1, 1)
 	if exit {
 		return err
+	}
+
+	// If stdin isn't a terminal, read text from it
+	if !termios.IsTerminal(getStdinFd()) {
+		contents, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+
+		err = yaml.Unmarshal(contents, &stdinData)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Parse remote
@@ -115,21 +144,24 @@ func (c *cmdProjectCreate) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing project name"))
+		return errors.New(i18n.G("Missing project name"))
 	}
 
 	// Create the project
 	project := api.ProjectsPost{}
 	project.Name = resource.name
+	project.ProjectPut = stdinData
 
-	project.Config = map[string]string{}
-	for _, entry := range c.flagConfig {
-		key, value, found := strings.Cut(entry, "=")
-		if !found {
-			return fmt.Errorf(i18n.G("Bad key=value pair: %q"), entry)
+	if project.Config == nil {
+		project.Config = map[string]string{}
+		for _, entry := range c.flagConfig {
+			key, value, found := strings.Cut(entry, "=")
+			if !found {
+				return fmt.Errorf(i18n.G("Bad key=value pair: %q"), entry)
+			}
+
+			project.Config[key] = value
 		}
-
-		project.Config[key] = value
 	}
 
 	err = resource.server.CreateProject(project)
@@ -160,6 +192,14 @@ func (c *cmdProjectDelete) command() *cobra.Command {
 
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpProjects(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -184,7 +224,7 @@ func (c *cmdProjectDelete) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing project name"))
+		return errors.New(i18n.G("Missing project name"))
 	}
 
 	// Delete the project
@@ -226,6 +266,14 @@ func (c *cmdProjectEdit) command() *cobra.Command {
 
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpProjects(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -266,7 +314,7 @@ func (c *cmdProjectEdit) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing project name"))
+		return errors.New(i18n.G("Missing project name"))
 	}
 
 	// If stdin isn't a terminal, read text from it
@@ -351,6 +399,19 @@ func (c *cmdProjectGet) command() *cobra.Command {
 
 	cmd.RunE = c.run
 	cmd.Flags().BoolVarP(&c.flagIsProperty, "property", "p", false, i18n.G("Get the key as a project property"))
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpProjects(toComplete)
+		}
+
+		if len(args) == 1 {
+			return c.global.cmpProjectConfigs(args[0])
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -370,7 +431,7 @@ func (c *cmdProjectGet) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing project name"))
+		return errors.New(i18n.G("Missing project name"))
 	}
 
 	// Get the configuration key
@@ -413,6 +474,14 @@ func (c *cmdProjectList) command() *cobra.Command {
 
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpRemotes(false)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -431,8 +500,6 @@ func (c *cmdProjectList) run(cmd *cobra.Command, args []string) error {
 		remote = args[0]
 	}
 
-	remoteName := strings.TrimSuffix(remote, ":")
-
 	resources, err := c.global.ParseServers(remote)
 	if err != nil {
 		return err
@@ -446,9 +513,10 @@ func (c *cmdProjectList) run(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	currentProject := conf.Remotes[remoteName].Project
-	if currentProject == "" {
-		currentProject = "default"
+	// Get the current project.
+	info, err := resource.server.GetConnectionInfo()
+	if err != nil {
+		return err
 	}
 
 	data := [][]string{}
@@ -484,7 +552,7 @@ func (c *cmdProjectList) run(cmd *cobra.Command, args []string) error {
 		}
 
 		name := project.Name
-		if name == currentProject {
+		if name == info.Project {
 			name = fmt.Sprintf("%s (%s)", name, i18n.G("current"))
 		}
 
@@ -525,6 +593,14 @@ func (c *cmdProjectRename) command() *cobra.Command {
 
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpProjects(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -544,7 +620,7 @@ func (c *cmdProjectRename) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing project name"))
+		return errors.New(i18n.G("Missing project name"))
 	}
 
 	// Rename the project
@@ -585,6 +661,15 @@ For backward compatibility, a single configuration key may still be set with:
 
 	cmd.RunE = c.run
 	cmd.Flags().BoolVarP(&c.flagIsProperty, "property", "p", false, i18n.G("Set the key as a project property"))
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpProjects(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -604,7 +689,7 @@ func (c *cmdProjectSet) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing project name"))
+		return errors.New(i18n.G("Missing project name"))
 	}
 
 	// Get the project
@@ -661,6 +746,19 @@ func (c *cmdProjectUnset) command() *cobra.Command {
 
 	cmd.RunE = c.run
 	cmd.Flags().BoolVarP(&c.flagIsProperty, "property", "p", false, i18n.G("Unset the key as a project property"))
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpProjects(toComplete)
+		}
+
+		if len(args) == 1 {
+			return c.global.cmpProjectConfigs(args[0])
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -692,6 +790,14 @@ func (c *cmdProjectShow) command() *cobra.Command {
 
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpProjects(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -711,7 +817,7 @@ func (c *cmdProjectShow) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing project name"))
+		return errors.New(i18n.G("Missing project name"))
 	}
 
 	// Show the project
@@ -744,6 +850,14 @@ func (c *cmdProjectSwitch) command() *cobra.Command {
 		`Switch the current project`))
 
 	cmd.RunE = c.run
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpProjects(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 
 	return cmd
 }
@@ -797,13 +911,21 @@ type cmdProjectInfo struct {
 
 func (c *cmdProjectInfo) command() *cobra.Command {
 	cmd := &cobra.Command{}
-	cmd.Use = usage("info", i18n.G("[<remote>:]<project> <key>"))
+	cmd.Use = usage("info", i18n.G("[<remote>:]<project>"))
 	cmd.Short = i18n.G("Get a summary of resource allocations")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(
 		`Get a summary of resource allocations`))
 	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", "table", i18n.G("Format (csv|json|table|yaml|compact)")+"``")
 
 	cmd.RunE = c.run
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpProjects(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 
 	return cmd
 }
@@ -824,7 +946,7 @@ func (c *cmdProjectInfo) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing project name"))
+		return errors.New(i18n.G("Missing project name"))
 	}
 
 	// Get the current allocations

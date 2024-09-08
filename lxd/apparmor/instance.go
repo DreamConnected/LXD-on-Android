@@ -26,6 +26,12 @@ type instance interface {
 	DevicesPath() string
 }
 
+type instanceVM interface {
+	instance
+
+	FirmwarePath() string
+}
+
 // InstanceProfileName returns the instance's AppArmor profile name.
 func InstanceProfileName(inst instance) string {
 	path := shared.VarPath("")
@@ -154,18 +160,30 @@ func instanceProfile(sysOS *sys.OS, inst instance) (string, error) {
 	}
 
 	// Render the profile.
-	var sb *strings.Builder = &strings.Builder{}
+	sb := &strings.Builder{}
 	if inst.Type() == instancetype.Container {
+		mountNosymfollowSupported, err := parserSupports(sysOS, "mount_nosymfollow")
+		if err != nil {
+			return "", err
+		}
+
+		usernsRuleSupported, err := parserSupports(sysOS, "userns_rule")
+		if err != nil {
+			return "", err
+		}
+
 		err = lxcProfileTpl.Execute(sb, map[string]any{
-			"feature_cgns":     sysOS.CGInfo.Namespacing,
-			"feature_cgroup2":  sysOS.CGInfo.Layout == cgroup.CgroupsUnified || sysOS.CGInfo.Layout == cgroup.CgroupsHybrid,
-			"feature_stacking": sysOS.AppArmorStacking && !sysOS.AppArmorStacked,
-			"feature_unix":     unixSupported,
-			"name":             InstanceProfileName(inst),
-			"namespace":        InstanceNamespaceName(inst),
-			"nesting":          shared.IsTrue(inst.ExpandedConfig()["security.nesting"]),
-			"raw":              rawContent,
-			"unprivileged":     shared.IsFalseOrEmpty(inst.ExpandedConfig()["security.privileged"]) || sysOS.RunningInUserNS,
+			"feature_cgns":              sysOS.CGInfo.Namespacing,
+			"feature_cgroup2":           sysOS.CGInfo.Layout == cgroup.CgroupsUnified || sysOS.CGInfo.Layout == cgroup.CgroupsHybrid,
+			"feature_stacking":          sysOS.AppArmorStacking && !sysOS.AppArmorStacked,
+			"feature_unix":              unixSupported,
+			"feature_mount_nosymfollow": mountNosymfollowSupported,
+			"feature_userns_rule":       usernsRuleSupported,
+			"name":                      InstanceProfileName(inst),
+			"namespace":                 InstanceNamespaceName(inst),
+			"nesting":                   shared.IsTrue(inst.ExpandedConfig()["security.nesting"]),
+			"raw":                       rawContent,
+			"unprivileged":              shared.IsFalseOrEmpty(inst.ExpandedConfig()["security.privileged"]) || sysOS.RunningInUserNS,
 		})
 		if err != nil {
 			return "", err
@@ -182,9 +200,18 @@ func instanceProfile(sysOS *sys.OS, inst instance) (string, error) {
 			return "", err
 		}
 
-		qemuFwPathsArr, err := util.GetQemuFwPaths()
-		if err != nil {
-			return "", err
+		vmInst, ok := inst.(instanceVM)
+		if !ok {
+			return "", fmt.Errorf("Instance is not VM type")
+		}
+
+		// Get start time firmware path to allow access to it.
+		firmwarePath := vmInst.FirmwarePath()
+		if firmwarePath != "" {
+			firmwarePath, err = filepath.EvalSymlinks(firmwarePath)
+			if err != nil {
+				return "", fmt.Errorf("Failed finding firmware: %w", err)
+			}
 		}
 
 		execPath := util.GetExecPath()
@@ -194,17 +221,18 @@ func instanceProfile(sysOS *sys.OS, inst instance) (string, error) {
 		}
 
 		err = qemuProfileTpl.Execute(sb, map[string]any{
-			"devicesPath": inst.DevicesPath(),
-			"exePath":     execPath,
-			"libraryPath": strings.Split(os.Getenv("LD_LIBRARY_PATH"), ":"),
-			"logPath":     inst.LogPath(),
-			"name":        InstanceProfileName(inst),
-			"path":        path,
-			"raw":         rawContent,
-			"rootPath":    rootPath,
-			"snap":        shared.InSnap(),
-			"userns":      sysOS.RunningInUserNS,
-			"qemuFwPaths": qemuFwPathsArr,
+			"devicesPath":       inst.DevicesPath(),
+			"exePath":           execPath,
+			"libraryPath":       strings.Split(os.Getenv("LD_LIBRARY_PATH"), ":"),
+			"logPath":           inst.LogPath(),
+			"name":              InstanceProfileName(inst),
+			"path":              path,
+			"raw":               rawContent,
+			"rootPath":          rootPath,
+			"snap":              shared.InSnap(),
+			"userns":            sysOS.RunningInUserNS,
+			"firmwarePath":      firmwarePath,
+			"snapExtQemuPrefix": os.Getenv("SNAP_QEMU_PREFIX"),
 		})
 		if err != nil {
 			return "", err

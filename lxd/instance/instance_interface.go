@@ -62,6 +62,8 @@ type ConfigReader interface {
 	Project() api.Project
 	Type() instancetype.Type
 	Architecture() int
+	ID() int
+
 	ExpandedConfig() map[string]string
 	ExpandedDevices() deviceConfig.Devices
 	LocalConfig() map[string]string
@@ -128,7 +130,6 @@ type Instance interface {
 	OnHook(hookName string, args map[string]string) error
 
 	// Properties.
-	ID() int
 	Location() string
 	Name() string
 	CloudInitID() string
@@ -161,6 +162,9 @@ type Instance interface {
 	MigrateSend(args MigrateSendArgs) error
 	MigrateReceive(args MigrateReceiveArgs) error
 
+	// Conversion.
+	ConversionReceive(args ConversionReceiveArgs) error
+
 	// Progress reporting.
 	SetOperation(op *operations.Operation)
 	Operation() *operations.Operation
@@ -188,6 +192,8 @@ type VM interface {
 	Instance
 
 	AgentCertificate() *x509.Certificate
+
+	FirmwarePath() string
 
 	// UEFI vars handling.
 	UEFIVars() (*api.InstanceUEFIVars, error)
@@ -241,4 +247,17 @@ type MigrateReceiveArgs struct {
 
 	InstanceOperation *operationlock.InstanceOperation
 	Refresh           bool
+}
+
+// ConversionArgs represent arguments for instance conversion send and receive.
+type ConversionArgs struct {
+	FilesystemConn func(ctx context.Context) (io.ReadWriteCloser, error)
+	Disconnect     func()
+}
+
+// ConversionReceiveArgs represent arguments for instance conversion receive.
+type ConversionReceiveArgs struct {
+	ConversionArgs
+	SourceDiskSize    int64 // Size of the disk in bytes.
+	ConversionOptions []string
 }

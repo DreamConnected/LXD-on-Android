@@ -115,18 +115,7 @@ func (d *disk) sourceIsCeph() bool {
 
 // CanHotPlug returns whether the device can be managed whilst the instance is running.
 func (d *disk) CanHotPlug() bool {
-	// Containers support hot-plugging all disk types.
-	if d.inst.Type() == instancetype.Container {
-		return true
-	}
-
-	// Only VirtioFS works with path hotplug.
-	// As migration.stateful turns off VirtioFS, this also turns off hotplugging of paths.
-	if shared.IsTrue(d.inst.ExpandedConfig()["migration.stateful"]) {
-		return false
-	}
-
-	// Block disks can be hot-plugged into VMs.
+	// All disks can be hot-plugged.
 	return true
 }
 
@@ -361,14 +350,14 @@ func (d *disk) validateConfig(instConf instance.ConfigReader) error {
 		//  shortdesc: Caching mode for the device
 		"io.cache": validate.Optional(validate.IsOneOf("none", "writeback", "unsafe")),
 		// lxdmeta:generate(entities=device-disk; group=device-conf; key=io.bus)
-		// Possible values are `virtio-scsi` or `nvme`.
+		// Possible values are `virtio-scsi`, `virtio-blk` or `nvme`.
 		// ---
 		//  type: string
 		//  defaultdesc: `virtio-scsi`
 		//  required: no
 		//  condition: virtual machine
 		//  shortdesc: Bus for the device
-		"io.bus": validate.Optional(validate.IsOneOf("virtio-scsi", "nvme")),
+		"io.bus": validate.Optional(validate.IsOneOf("nvme", "virtio-blk", "virtio-scsi")),
 	}
 
 	err := d.config.Validate(rules)
@@ -511,8 +500,8 @@ func (d *disk) validateConfig(instConf instance.ConfigReader) error {
 					return fmt.Errorf("Failed checking if custom volume is exclusively attached to another instance: %w", err)
 				}
 
-				if remoteInstance != nil {
-					return fmt.Errorf("Custom volume is already attached to an instance on a different node")
+				if remoteInstance != nil && remoteInstance.ID != instConf.ID() {
+					return fmt.Errorf("Custom volume is already attached to an instance on a different cluster member")
 				}
 
 				// Check that block volumes are *only* attached to VM instances.
@@ -572,6 +561,25 @@ func (d *disk) validateConfig(instConf instance.ConfigReader) error {
 					return fmt.Errorf("Invalid initial device configuration: %v", err)
 				}
 			}
+		}
+	}
+
+	// Restrict disks allowed when live-migratable.
+	if instConf.Type() == instancetype.VM && shared.IsTrue(instConf.ExpandedConfig()["migration.stateful"]) {
+		if d.config["path"] != "" && d.config["path"] != "/" {
+			return fmt.Errorf("Shared filesystem are incompatible with migration.stateful=true")
+		}
+
+		if d.config["pool"] == "" {
+			return fmt.Errorf("Only LXD-managed disks are allowed with migration.stateful=true")
+		}
+
+		if d.config["io.bus"] == "nvme" {
+			return fmt.Errorf("NVME disks aren't supported with migration.stateful=true")
+		}
+
+		if d.config["path"] != "/" && d.pool != nil && !d.pool.Driver().Info().Remote {
+			return fmt.Errorf("Only additional disks coming from a shared storage pool are supported with migration.stateful=true")
 		}
 	}
 
@@ -1157,7 +1165,7 @@ func (d *disk) startVM() (*deviceConfig.RunConfig, error) {
 					logPath := filepath.Join(d.inst.LogPath(), fmt.Sprintf("disk.%s.log", filesystem.PathNameEncode(d.name)))
 					_ = os.Remove(logPath) // Remove old log if needed.
 
-					revertFunc, unixListener, err := DiskVMVirtiofsdStart(d.state.OS.ExecPath, d.inst, sockPath, pidPath, logPath, mount.DevPath, rawIDMaps)
+					revertFunc, unixListener, err := DiskVMVirtiofsdStart(d.state.OS.KernelVersion, d.inst, sockPath, pidPath, logPath, mount.DevPath, rawIDMaps)
 					if err != nil {
 						var errUnsupported UnsupportedError
 						if errors.As(err, &errUnsupported) {
