@@ -5,7 +5,6 @@ spawn_lxd() {
     # LXD_DIR is local here because since $(lxc) is actually a function, it
     # overwrites the environment and we would lose LXD_DIR's value otherwise.
 
-    # shellcheck disable=2039,3043
     local LXD_DIR lxddir lxd_backend
 
     lxddir=${1}
@@ -37,7 +36,7 @@ spawn_lxd() {
         LXD_DIR="${lxddir}" lxd --logfile "${lxddir}/lxd.log" "${DEBUG-}" "$@" 2>&1 &
     else
         # shellcheck disable=SC2153
-        pid="$(cat "${TEST_DIR}/ns/${LXD_NETNS}/PID")"
+        read -r pid < "${TEST_DIR}/ns/${LXD_NETNS}/PID"
         LXD_DIR="${lxddir}" nsenter -n -m -t "${pid}" lxd --logfile "${lxddir}/lxd.log" "${DEBUG-}" "$@" 2>&1 &
     fi
     LXD_PID=$!
@@ -80,7 +79,6 @@ respawn_lxd() {
     # LXD_DIR is local here because since $(lxc) is actually a function, it
     # overwrites the environment and we would lose LXD_DIR's value otherwise.
 
-    # shellcheck disable=2039,3043
     local LXD_DIR
 
     lxddir=${1}
@@ -94,7 +92,7 @@ respawn_lxd() {
     if [ "${LXD_NETNS}" = "" ]; then
         LXD_DIR="${lxddir}" lxd --logfile "${lxddir}/lxd.log" "${DEBUG-}" "$@" 2>&1 &
     else
-        pid="$(cat "${TEST_DIR}/ns/${LXD_NETNS}/PID")"
+        read -r pid < "${TEST_DIR}/ns/${LXD_NETNS}/PID"
         LXD_DIR="${lxddir}" nsenter -n -m -t "${pid}" lxd --logfile "${lxddir}/lxd.log" "${DEBUG-}" "$@" 2>&1 &
     fi
     LXD_PID=$!
@@ -115,7 +113,6 @@ kill_lxd() {
     # LXD_DIR is local here because since $(lxc) is actually a function, it
     # overwrites the environment and we would lose LXD_DIR's value otherwise.
 
-    # shellcheck disable=2039,3043
     local LXD_DIR daemon_dir daemon_pid check_leftovers lxd_backend
 
     daemon_dir=${1}
@@ -208,11 +205,7 @@ kill_lxd() {
         rm -f "${daemon_dir}/containers/lxc-monitord.log"
 
         # Support AppArmor policy cache directory
-        if apparmor_parser --help | grep -q -- '--print-cache.dir'; then
-          apparmor_cache_dir="$(apparmor_parser -L "${daemon_dir}"/security/apparmor/cache --print-cache-dir)"
-        else
-          apparmor_cache_dir="${daemon_dir}/security/apparmor/cache"
-        fi
+        apparmor_cache_dir="$(apparmor_parser -L "${daemon_dir}"/security/apparmor/cache --print-cache-dir)"
         rm -f "${apparmor_cache_dir}/.features"
         check_empty "${daemon_dir}/containers/"
         check_empty "${daemon_dir}/devices/"
@@ -263,7 +256,6 @@ shutdown_lxd() {
     # LXD_DIR is local here because since $(lxc) is actually a function, it
     # overwrites the environment and we would lose LXD_DIR's value otherwise.
 
-    # shellcheck disable=2039,3043
     local LXD_DIR
 
     daemon_dir=${1}
@@ -281,7 +273,6 @@ shutdown_lxd() {
 }
 
 wait_for() {
-    # shellcheck disable=SC2039,3043
     local addr op
 
     addr=${1}
@@ -298,7 +289,6 @@ wipe() {
         fi
     fi
 
-    # shellcheck disable=SC2039,3043
     local pid
     # shellcheck disable=SC2009
     ps aux | grep lxc-monitord | grep "${1}" | awk '{print $2}' | while read -r pid; do
@@ -314,7 +304,6 @@ wipe() {
 
 # Kill and cleanup LXD instances and related resources
 cleanup_lxds() {
-    # shellcheck disable=SC2039,3043
     local test_dir daemon_dir
     test_dir="$1"
 

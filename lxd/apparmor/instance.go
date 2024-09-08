@@ -154,18 +154,30 @@ func instanceProfile(sysOS *sys.OS, inst instance) (string, error) {
 	}
 
 	// Render the profile.
-	var sb *strings.Builder = &strings.Builder{}
+	sb := &strings.Builder{}
 	if inst.Type() == instancetype.Container {
+		mountNosymfollowSupported, err := parserSupports(sysOS, "mount_nosymfollow")
+		if err != nil {
+			return "", err
+		}
+
+		usernsRuleSupported, err := parserSupports(sysOS, "userns_rule")
+		if err != nil {
+			return "", err
+		}
+
 		err = lxcProfileTpl.Execute(sb, map[string]any{
-			"feature_cgns":     sysOS.CGInfo.Namespacing,
-			"feature_cgroup2":  sysOS.CGInfo.Layout == cgroup.CgroupsUnified || sysOS.CGInfo.Layout == cgroup.CgroupsHybrid,
-			"feature_stacking": sysOS.AppArmorStacking && !sysOS.AppArmorStacked,
-			"feature_unix":     unixSupported,
-			"name":             InstanceProfileName(inst),
-			"namespace":        InstanceNamespaceName(inst),
-			"nesting":          shared.IsTrue(inst.ExpandedConfig()["security.nesting"]),
-			"raw":              rawContent,
-			"unprivileged":     shared.IsFalseOrEmpty(inst.ExpandedConfig()["security.privileged"]) || sysOS.RunningInUserNS,
+			"feature_cgns":              sysOS.CGInfo.Namespacing,
+			"feature_cgroup2":           sysOS.CGInfo.Layout == cgroup.CgroupsUnified || sysOS.CGInfo.Layout == cgroup.CgroupsHybrid,
+			"feature_stacking":          sysOS.AppArmorStacking && !sysOS.AppArmorStacked,
+			"feature_unix":              unixSupported,
+			"feature_mount_nosymfollow": mountNosymfollowSupported,
+			"feature_userns_rule":       usernsRuleSupported,
+			"name":                      InstanceProfileName(inst),
+			"namespace":                 InstanceNamespaceName(inst),
+			"nesting":                   shared.IsTrue(inst.ExpandedConfig()["security.nesting"]),
+			"raw":                       rawContent,
+			"unprivileged":              shared.IsFalseOrEmpty(inst.ExpandedConfig()["security.privileged"]) || sysOS.RunningInUserNS,
 		})
 		if err != nil {
 			return "", err
@@ -194,17 +206,18 @@ func instanceProfile(sysOS *sys.OS, inst instance) (string, error) {
 		}
 
 		err = qemuProfileTpl.Execute(sb, map[string]any{
-			"devicesPath": inst.DevicesPath(),
-			"exePath":     execPath,
-			"libraryPath": strings.Split(os.Getenv("LD_LIBRARY_PATH"), ":"),
-			"logPath":     inst.LogPath(),
-			"name":        InstanceProfileName(inst),
-			"path":        path,
-			"raw":         rawContent,
-			"rootPath":    rootPath,
-			"snap":        shared.InSnap(),
-			"userns":      sysOS.RunningInUserNS,
-			"qemuFwPaths": qemuFwPathsArr,
+			"devicesPath":       inst.DevicesPath(),
+			"exePath":           execPath,
+			"libraryPath":       strings.Split(os.Getenv("LD_LIBRARY_PATH"), ":"),
+			"logPath":           inst.LogPath(),
+			"name":              InstanceProfileName(inst),
+			"path":              path,
+			"raw":               rawContent,
+			"rootPath":          rootPath,
+			"snap":              shared.InSnap(),
+			"userns":            sysOS.RunningInUserNS,
+			"qemuFwPaths":       qemuFwPathsArr,
+			"snapExtQemuPrefix": os.Getenv("SNAP_QEMU_PREFIX"),
 		})
 		if err != nil {
 			return "", err

@@ -1,17 +1,5 @@
 package drivers
 
-/*
-
-#include <linux/types.h>
-#include <sys/ioctl.h>
-#include <stdint.h>
-
-#define VHOST_VIRTIO 0xAF
-#define VHOST_VSOCK_SET_GUEST_CID	_IOW(VHOST_VIRTIO, 0x60, __u64)
-
-*/
-import "C"
-
 import (
 	"bufio"
 	"bytes"
@@ -65,6 +53,7 @@ import (
 	"github.com/canonical/lxd/lxd/instance/operationlock"
 	"github.com/canonical/lxd/lxd/instancewriter"
 	"github.com/canonical/lxd/lxd/lifecycle"
+	"github.com/canonical/lxd/lxd/linux"
 	"github.com/canonical/lxd/lxd/metrics"
 	"github.com/canonical/lxd/lxd/migration"
 	"github.com/canonical/lxd/lxd/network"
@@ -1399,7 +1388,7 @@ func (d *qemu) start(stateful bool, op *operationlock.InstanceOperation) error {
 	// This is used by the lxd-agent in preference to 9p (due to its improved performance) and in scenarios
 	// where 9p isn't available in the VM guest OS.
 	configSockPath, configPIDPath := d.configVirtiofsdPaths()
-	revertFunc, unixListener, err := device.DiskVMVirtiofsdStart(d.state.OS.ExecPath, d, configSockPath, configPIDPath, "", configMntPath, nil)
+	revertFunc, unixListener, err := device.DiskVMVirtiofsdStart(d.state.OS.KernelVersion, d, configSockPath, configPIDPath, "", configMntPath, nil)
 	if err != nil {
 		var errUnsupported device.UnsupportedError
 		if !errors.As(err, &errUnsupported) {
@@ -2044,29 +2033,34 @@ func (d *qemu) setupNvram() error {
 }
 
 func (d *qemu) qemuArchConfig(arch int) (path string, bus string, err error) {
+	basePath := ""
+	if shared.InSnap() && os.Getenv("SNAP_QEMU_PREFIX") != "" {
+		basePath = filepath.Join(os.Getenv("SNAP"), os.Getenv("SNAP_QEMU_PREFIX")) + "/bin/"
+	}
+
 	if arch == osarch.ARCH_64BIT_INTEL_X86 {
-		path, err := exec.LookPath("qemu-system-x86_64")
+		path, err := exec.LookPath(basePath + "qemu-system-x86_64")
 		if err != nil {
 			return "", "", err
 		}
 
 		return path, "pcie", nil
 	} else if arch == osarch.ARCH_64BIT_ARMV8_LITTLE_ENDIAN {
-		path, err := exec.LookPath("qemu-system-aarch64")
+		path, err := exec.LookPath(basePath + "qemu-system-aarch64")
 		if err != nil {
 			return "", "", err
 		}
 
 		return path, "pcie", nil
 	} else if arch == osarch.ARCH_64BIT_POWERPC_LITTLE_ENDIAN {
-		path, err := exec.LookPath("qemu-system-ppc64")
+		path, err := exec.LookPath(basePath + "qemu-system-ppc64")
 		if err != nil {
 			return "", "", err
 		}
 
 		return path, "pci", nil
 	} else if arch == osarch.ARCH_64BIT_S390_BIG_ENDIAN {
-		path, err := exec.LookPath("qemu-system-s390x")
+		path, err := exec.LookPath(basePath + "qemu-system-s390x")
 		if err != nil {
 			return "", "", err
 		}
@@ -7291,15 +7285,9 @@ func (d *qemu) MigrateReceive(args instance.MigrateReceiveArgs) error {
 
 		// At this point we have already figured out the parent instances's root
 		// disk device so we can simply retrieve it from the expanded devices.
-		parentStoragePool := ""
-		parentExpandedDevices := d.ExpandedDevices()
-		parentLocalRootDiskDeviceKey, parentLocalRootDiskDevice, _ := instancetype.GetRootDiskDevice(parentExpandedDevices.CloneNative())
-		if parentLocalRootDiskDeviceKey != "" {
-			parentStoragePool = parentLocalRootDiskDevice["pool"]
-		}
-
-		if parentStoragePool == "" {
-			return fmt.Errorf("Instance's root device is missing the pool property")
+		parentStoragePool, err := d.getParentStoragePool()
+		if err != nil {
+			return err
 		}
 
 		// A zero length Snapshots slice indicates volume only migration in
@@ -7451,6 +7439,47 @@ func (d *qemu) MigrateReceive(args instance.MigrateReceiveArgs) error {
 		revert.Success()
 		return nil
 	}
+}
+
+// ConversionReceive establishes the filesystem connection, transfers the filesystem / block volume,
+// and creates an instance from it.
+func (d *qemu) ConversionReceive(args instance.ConversionReceiveArgs) error {
+	d.logger.Info("Conversion receive starting")
+	defer d.logger.Info("Conversion receive stopped")
+
+	// Wait for filesystem connection.
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	defer cancel()
+
+	filesystemConn, err := args.FilesystemConn(ctx)
+	if err != nil {
+		return err
+	}
+
+	pool, err := storagePools.LoadByInstance(d.state, d)
+	if err != nil {
+		return err
+	}
+
+	// Ensure that configured root disk device is valid.
+	_, err = d.getParentStoragePool()
+	if err != nil {
+		return err
+	}
+
+	volTargetArgs := migration.VolumeTargetArgs{
+		Name:              d.Name(),
+		TrackProgress:     true,                   // Use a progress tracker on receiver to get progress information.
+		VolumeSize:        args.SourceDiskSize,    // Block volume size override.
+		ConversionOptions: args.ConversionOptions, // Non-nil options indicate image conversion.
+	}
+
+	err = pool.CreateInstanceFromConversion(d, filesystemConn, volTargetArgs, d.op)
+	if err != nil {
+		return fmt.Errorf("Failed creating instance on target: %w", err)
+	}
+
+	return nil
 }
 
 // CGroup is not implemented for VMs.
@@ -8087,7 +8116,8 @@ func (d *qemu) acquireVsockID(vsockID uint32) (*os.File, error) {
 	// The vsock Context ID cannot be supplied as type uint32.
 	vsockIDInt := uint64(vsockID)
 
-	_, _, errno := unix.Syscall(unix.SYS_IOCTL, vsockF.Fd(), C.VHOST_VSOCK_SET_GUEST_CID, uintptr(unsafe.Pointer(&vsockIDInt)))
+	// Call the ioctl to set the context ID.
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, vsockF.Fd(), linux.IoctlVhostVsockSetGuestCid, uintptr(unsafe.Pointer(&vsockIDInt)))
 	if errno != 0 {
 		if !errors.Is(errno, unix.EADDRINUSE) {
 			return nil, fmt.Errorf("Failed ioctl syscall to vhost socket: %q", errno.Error())
@@ -8538,6 +8568,10 @@ func (d *qemu) Info() instance.Info {
 		data.Version = qemuVersion
 	} else {
 		data.Version = "unknown" // Not necessarily an error that should prevent us using driver.
+	}
+
+	if shared.InSnap() && os.Getenv("SNAP_QEMU_PREFIX") != "" {
+		data.Version = data.Version + " (external)"
 	}
 
 	data.Features, err = d.checkFeatures(hostArch, qemuPath)
