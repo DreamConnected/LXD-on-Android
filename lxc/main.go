@@ -4,7 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
-	"os/user"
+	// "os/user"
 	"path"
 	"path/filepath"
 
@@ -326,15 +326,8 @@ func (c *cmdGlobal) PreRun(cmd *cobra.Command, args []string) error {
 	var configDir string
 	if os.Getenv("LXD_CONF") != "" {
 		configDir = os.Getenv("LXD_CONF")
-	} else if os.Getenv("HOME") != "" {
-		configDir = path.Join(os.Getenv("HOME"), ".config", "lxc")
 	} else {
-		user, err := user.Current()
-		if err != nil {
-			return err
-		}
-
-		configDir = path.Join(user.HomeDir, ".config", "lxc")
+		configDir = path.Join("/data/lxd", ".config", "lxc")
 	}
 
 	c.confPath = os.ExpandEnv(path.Join(configDir, "config.yml"))

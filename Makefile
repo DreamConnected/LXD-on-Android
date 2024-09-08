@@ -33,32 +33,32 @@ ifeq "$(TAG_SQLITE3)" ""
 	@echo "Missing dqlite, run \"make deps\" to setup."
 	exit 1
 endif
-	CC="$(CC)" CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" go install -v -tags "$(TAG_SQLITE3)" $(DEBUG) ./...
+	CC="$(CC)" CGO_LDFLAGS_ALLOW="$(CGO_LDFLAGS_ALLOW)" go install -v -tags "$(TAG_SQLITE3)" $(DEBUG) -ldflags '-s -w --extldflags "-static -fpic"' ./...
 	@echo "LXD built successfully"
 
 .PHONY: client
 client:
-	go install -v -tags "$(TAG_SQLITE3)" $(DEBUG) ./lxc
+	go install -v -tags "$(TAG_SQLITE3)" $(DEBUG) -ldflags '-s -w --extldflags "-static -fpic"' ./lxc
 	@echo "LXD client built successfully"
 
 .PHONY: lxd-agent
 lxd-agent:
-	CGO_ENABLED=0 go install -v -tags agent,netgo ./lxd-agent
+	CGO_ENABLED=0 go install -v -tags agent,netgo -ldflags '-s -w --extldflags "-static -fpic"' ./lxd-agent
 	@echo "LXD agent built successfully"
 
 .PHONY: lxd-benchmark
 lxd-benchmark:
-	CGO_ENABLED=0 go install -v ./lxd-benchmark
+	CGO_ENABLED=0 go install -v  -ldflags '-s -w --extldflags "-static -fpic"' ./lxd-benchmark
 	@echo "LXD benchmark built successfully"
 
 .PHONY: lxd-metadata
 lxd-metadata:
-	CGO_ENABLED=0 go install -v -tags lxd-metadata ./lxd/lxd-metadata
+	CGO_ENABLED=0 go install -v -tags lxd-metadata -ldflags '-s -w --extldflags "-static -fpic"' ./lxd/lxd-metadata
 	@echo "LXD metadata built successfully"
 
 .PHONY: lxd-migrate
 lxd-migrate:
-	CGO_ENABLED=0 go install -v -tags netgo ./lxd-migrate
+	CGO_ENABLED=0 go install -v -tags netgo -ldflags '-s -w --extldflags "-static -fpic"' ./lxd-migrate
 	@echo "LXD-MIGRATE built successfully"
 
 .PHONY: deps
@@ -72,7 +72,7 @@ deps:
 
 	cd "$(DQLITE_PATH)" && \
 		autoreconf -i && \
-		./configure --enable-build-raft && \
+		./configure --enable-build-raft --host=aarch64-linux-musl --disable-shared --enable-static && \
 		make
 
 	# environment

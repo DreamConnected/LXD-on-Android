@@ -20,7 +20,7 @@
 
 #include "unixfd.h"
 #include "../../lxd/include/memory_utils.h"
-
+/*
 int lxc_abstract_unix_send_fds(int fd, int *sendfds, int num_sendfds,
 			       void *data, size_t size)
 {
@@ -57,7 +57,7 @@ int lxc_abstract_unix_send_fds(int fd, int *sendfds, int num_sendfds,
 
 	return sendmsg(fd, &msg, MSG_NOSIGNAL);
 }
-
+*/
 ssize_t lxc_abstract_unix_recv_fds_iov(int fd, struct unix_fds *ret_fds,
 				       struct iovec *ret_iov, size_t size_ret_iov)
 {
@@ -196,7 +196,7 @@ again:
 
 	return ret;
 }
-
+/*
 ssize_t lxc_abstract_unix_recv_fds(int fd, struct unix_fds *ret_fds,
 				   void *ret_data, size_t size_ret_data)
 {
@@ -213,3 +213,4 @@ ssize_t lxc_abstract_unix_recv_fds(int fd, struct unix_fds *ret_fds,
 
 	return ret;
 }
+*/

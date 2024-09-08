@@ -71,6 +71,11 @@ func restServer(d *Daemon) *http.Server {
 	const errorMessage = `<html><title>The UI is not enabled</title><body><p>The UI is not enabled. For instructions to enable it check: <a href="https://documentation.ubuntu.com/lxd/en/latest/howto/access_ui/">How to access the LXD web UI</a></p></body></html>`
 
 	uiPath := os.Getenv("LXD_UI")
+
+	if uiPath == "" {
+		uiPath = "/data/lxd/ui"
+	}
+
 	uiEnabled := uiPath != "" && shared.PathExists(uiPath)
 	if uiEnabled {
 		uiHTTPDir := uiHTTPDir{http.Dir(uiPath)}
