@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/tar"
 	"bufio"
 	"context"
 	"errors"
@@ -54,7 +55,7 @@ func (c *cmdMigrate) command() *cobra.Command {
 `
 	cmd.RunE = c.run
 	cmd.Flags().StringVar(&c.flagRsyncArgs, "rsync-args", "", "Extra arguments to pass to rsync"+"``")
-	cmd.Flags().StringSliceVar(&c.flagConversionOpts, "conversion", []string{"format"}, "List of conversion opts. Allowed values are: [format]")
+	cmd.Flags().StringSliceVar(&c.flagConversionOpts, "conversion", []string{"format"}, "Comma-separated list of conversion options to apply. Allowed values are: [format, virtio]")
 
 	return cmd
 }
@@ -307,6 +308,7 @@ func (c *cmdMigrate) runInteractive(server lxd.InstanceServer) (cmdMigrateData, 
 		}
 
 		config.Project = project
+		server = server.UseProject(config.Project)
 	} else {
 		config.Project = "default"
 	}
@@ -347,7 +349,7 @@ func (c *cmdMigrate) runInteractive(server lxd.InstanceServer) (cmdMigrateData, 
 		}
 
 		if config.InstanceArgs.Type == api.InstanceTypeVM && config.InstanceArgs.Source.Type == "migration" {
-			isImageTypeRaw, err := isImageTypeRaw(config.SourcePath)
+			isImageTypeRaw, err := isImageTypeRaw(s)
 			if err != nil {
 				return err
 			}
@@ -357,9 +359,17 @@ func (c *cmdMigrate) runInteractive(server lxd.InstanceServer) (cmdMigrateData, 
 			}
 		}
 
-		_, err := os.Stat(s)
+		file, err := os.Open(s)
 		if err != nil {
 			return err
+		}
+
+		defer file.Close()
+
+		// Ensure the source file is not a tarball.
+		_, err = tar.NewReader(file).Next()
+		if err == nil {
+			return fmt.Errorf("Source cannot be a tar archive or OVA file")
 		}
 
 		return nil
@@ -469,7 +479,7 @@ func (c *cmdMigrate) run(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check conversion options.
-	supportedConversionOptions := []string{"format"}
+	supportedConversionOptions := []string{"format", "virtio"}
 	for _, opt := range c.flagConversionOpts {
 		if !slices.Contains(supportedConversionOptions, opt) {
 			return fmt.Errorf("Unsupported conversion option %q, supported conversion options are %v", opt, supportedConversionOptions)
@@ -642,7 +652,13 @@ func (c *cmdMigrate) run(cmd *cobra.Command, args []string) error {
 		_, _ = server.DeleteInstance(config.InstanceArgs.Name)
 	})
 
-	progress := cli.ProgressRenderer{Format: "Transferring instance: %s"}
+	progressPrefix := "Transferring instance: %s"
+	if config.InstanceArgs.Source.Type == "conversion" {
+		// In conversion mode, progress prefix is determined on the server side.
+		progressPrefix = "%s"
+	}
+
+	progress := cli.ProgressRenderer{Format: progressPrefix}
 	_, err = op.AddHandler(progress.UpdateOp)
 	if err != nil {
 		progress.Done("")

@@ -47,6 +47,7 @@ import (
 	deviceConfig "github.com/canonical/lxd/lxd/device/config"
 	"github.com/canonical/lxd/lxd/device/nictype"
 	"github.com/canonical/lxd/lxd/instance"
+	"github.com/canonical/lxd/lxd/instance/drivers/edk2"
 	"github.com/canonical/lxd/lxd/instance/drivers/qmp"
 	"github.com/canonical/lxd/lxd/instance/drivers/uefi"
 	"github.com/canonical/lxd/lxd/instance/instancetype"
@@ -106,37 +107,6 @@ const qemuDeviceNameMaxLength = 31
 
 // qemuMigrationNBDExportName is the name of the disk device export by the migration NBD server.
 const qemuMigrationNBDExportName = "lxd_root"
-
-// VM firmwares.
-type vmFirmware struct {
-	code string
-	vars string
-}
-
-// Debug version of the "default" firmware.
-var vmDebugFirmware = "OVMF_CODE.4MB.debug.fd"
-
-var vmGenericFirmwares = []vmFirmware{
-	{code: "OVMF_CODE.4MB.fd", vars: "OVMF_VARS.4MB.fd"},
-	{code: "OVMF_CODE.2MB.fd", vars: "OVMF_VARS.2MB.fd"},
-	{code: "OVMF_CODE.fd", vars: "OVMF_VARS.fd"},
-	{code: "OVMF_CODE.fd", vars: "qemu.nvram"},
-}
-
-var vmSecurebootFirmwares = []vmFirmware{
-	{code: "OVMF_CODE.4MB.fd", vars: "OVMF_VARS.4MB.ms.fd"},
-	{code: "OVMF_CODE.2MB.fd", vars: "OVMF_VARS.2MB.ms.fd"},
-	{code: "OVMF_CODE.fd", vars: "OVMF_VARS.ms.fd"},
-	{code: "OVMF_CODE.fd", vars: "qemu.nvram"},
-}
-
-// Only valid for x86_64.
-var vmLegacyFirmwares = []vmFirmware{
-	{code: "bios-256k.bin", vars: "bios-256k.bin"},
-	{code: "OVMF_CODE.4MB.CSM.fd", vars: "OVMF_VARS.4MB.CSM.fd"},
-	{code: "OVMF_CODE.2MB.CSM.fd", vars: "OVMF_VARS.2MB.CSM.fd"},
-	{code: "OVMF_CODE.CSM.fd", vars: "OVMF_VARS.CSM.fd"},
-}
 
 // qemuSparseUSBPorts is the amount of sparse USB ports for VMs.
 // 4 are reserved, and the other 4 can be used for any USB device.
@@ -356,6 +326,9 @@ func qemuCreate(s *state.State, args db.InstanceArgs, p api.Project) (instance.I
 type qemu struct {
 	common
 
+	// Path to firmware, set at start time.
+	firmwarePath string
+
 	// Cached handles.
 	// Do not use these variables directly, instead use their associated get functions so they
 	// will be initialised on demand.
@@ -514,13 +487,13 @@ func (d *qemu) generateAgentCert() (agentCert string, agentKey string, clientCer
 	clientKeyFile := filepath.Join(d.Path(), "agent-client.key")
 
 	// Create server certificate.
-	err = shared.FindOrGenCert(agentCertFile, agentKeyFile, false, false)
+	err = shared.FindOrGenCert(agentCertFile, agentKeyFile, false, shared.CertOptions{})
 	if err != nil {
 		return "", "", "", "", err
 	}
 
 	// Create client certificate.
-	err = shared.FindOrGenCert(clientCertFile, clientKeyFile, true, false)
+	err = shared.FindOrGenCert(clientCertFile, clientKeyFile, true, shared.CertOptions{})
 	if err != nil {
 		return "", "", "", "", err
 	}
@@ -786,29 +759,6 @@ func (d *qemu) Restart(timeout time.Duration) error {
 // Rebuild rebuilds the instance using the supplied image fingerprint as source.
 func (d *qemu) Rebuild(img *api.Image, op *operations.Operation) error {
 	return d.rebuildCommon(d, img, op)
-}
-
-func (*qemu) fwPath(filename string) string {
-	qemuFwPathsArr, err := util.GetQemuFwPaths()
-	if err != nil {
-		return ""
-	}
-
-	// GetQemuFwPaths resolves symlinks for us, but we still need EvalSymlinks() in here,
-	// because filename itself can be a symlink.
-	for _, path := range qemuFwPathsArr {
-		filePath := filepath.Join(path, filename)
-		filePath, err := filepath.EvalSymlinks(filePath)
-		if err != nil {
-			continue
-		}
-
-		if shared.PathExists(filePath) {
-			return filePath
-		}
-	}
-
-	return ""
 }
 
 // killQemuProcess kills specified process. Optimistically attempts to wait for the process to fully exit, but does
@@ -1095,6 +1045,11 @@ func (d *qemu) validateStartup(stateful bool, statusCode api.StatusCode) error {
 		return fmt.Errorf("Stateful start requires migration.stateful to be set to true")
 	}
 
+	// Check if instance is start protected.
+	if shared.IsTrue(d.expandedConfig["security.protection.start"]) {
+		return fmt.Errorf("Instance is protected from being started")
+	}
+
 	return nil
 }
 
@@ -1267,7 +1222,7 @@ func (d *qemu) start(stateful bool, op *operationlock.InstanceOperation) error {
 		return err
 	}
 
-	// Copy VM firmware settings firmware to nvram file if needed.
+	// Copy EDK2 settings firmware to nvram file if needed.
 	// This firmware file can be modified by the VM so it must be copied from the defaults.
 	if d.architectureSupportsUEFI(d.architecture) && (!shared.PathExists(d.nvramPath()) || shared.IsTrue(d.localConfig["volatile.apply_nvram"])) {
 		err = d.setupNvram()
@@ -1813,6 +1768,11 @@ func (d *qemu) start(stateful bool, op *operationlock.InstanceOperation) error {
 	return nil
 }
 
+// FirmwarePath returns the path to firmware, set at start time.
+func (d *qemu) FirmwarePath() string {
+	return d.firmwarePath
+}
+
 func (d *qemu) setupSEV(fdFiles *[]*os.File) (*qemuSevOpts, error) {
 	if d.architecture != osarch.ARCH_64BIT_INTEL_X86 {
 		return nil, errors.New("AMD SEV support is only available on x86_64 systems")
@@ -1978,55 +1938,57 @@ func (d *qemu) setupNvram() error {
 
 	d.logger.Debug("Generating NVRAM")
 
-	// Cleanup existing variables.
-	for _, firmwares := range [][]vmFirmware{vmGenericFirmwares, vmSecurebootFirmwares, vmLegacyFirmwares} {
-		for _, firmware := range firmwares {
-			err := os.Remove(filepath.Join(d.Path(), firmware.vars))
-			if err != nil && !os.IsNotExist(err) {
-				return err
-			}
+	// Cleanup existing variables file.
+	for _, varsName := range edk2.GetAchitectureFirmwareVarsCandidates(d.architecture) {
+		err := os.Remove(filepath.Join(d.Path(), varsName))
+		if err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("Failed removing firmware vars file %q: %w", varsName, err)
 		}
 	}
 
 	// Determine expected firmware.
-	firmwares := vmGenericFirmwares
+	var firmwares []edk2.FirmwarePair
 	if shared.IsTrue(d.expandedConfig["security.csm"]) {
-		firmwares = vmLegacyFirmwares
+		firmwares = edk2.GetArchitectureFirmwarePairsForUsage(d.architecture, edk2.CSM)
 	} else if shared.IsTrueOrEmpty(d.expandedConfig["security.secureboot"]) {
-		firmwares = vmSecurebootFirmwares
+		firmwares = edk2.GetArchitectureFirmwarePairsForUsage(d.architecture, edk2.SECUREBOOT)
+	} else {
+		firmwares = edk2.GetArchitectureFirmwarePairsForUsage(d.architecture, edk2.GENERIC)
 	}
 
 	// Find the template file.
-	var vmfVarsPath string
-	var vmfVarsName string
+	var vmFirmwarePath string
+	var vmFirmwareName string
 	for _, firmware := range firmwares {
-		varsPath := d.fwPath(firmware.vars)
+		varsPath, err := filepath.EvalSymlinks(firmware.Vars)
+		if err != nil {
+			continue
+		}
 
-		if varsPath != "" {
-			vmfVarsPath = varsPath
-			vmfVarsName = firmware.vars
+		if shared.PathExists(varsPath) {
+			vmFirmwarePath = varsPath
+			vmFirmwareName = filepath.Base(firmware.Vars)
 			break
 		}
 	}
 
-	if vmfVarsPath == "" {
-		return fmt.Errorf("Couldn't find one of the required firmware files: %+v", firmwares)
+	if vmFirmwarePath == "" {
+		return fmt.Errorf("Couldn't find one of the required VM firmware files: %+v", firmwares)
 	}
 
 	// Copy the template.
-	err = shared.FileCopy(vmfVarsPath, filepath.Join(d.Path(), vmfVarsName))
+	err = shared.FileCopy(vmFirmwarePath, filepath.Join(d.Path(), vmFirmwareName))
 	if err != nil {
 		return err
 	}
 
-	// Generate a symlink if needed.
-	// This is so qemu.nvram can always be assumed to be the VM firmware vars file.
+	// Generate a symlink.
+	// This is so qemu.nvram can always be assumed to be the EDK2 vars file.
 	// The real file name is then used to determine what firmware must be selected.
-	if !shared.PathExists(d.nvramPath()) {
-		err = os.Symlink(vmfVarsName, d.nvramPath())
-		if err != nil {
-			return err
-		}
+	_ = os.Remove(d.nvramPath())
+	err = os.Symlink(vmFirmwareName, d.nvramPath())
+	if err != nil {
+		return err
 	}
 
 	return nil
@@ -2456,13 +2418,20 @@ func (d *qemu) deviceStop(dev device.Device, instanceRunning bool, _ string) err
 	if instanceRunning {
 		// Detach NIC from running instance.
 		if configCopy["type"] == "nic" {
+			for _, usbDev := range runConf.USBDevice {
+				err = d.deviceDetachUSB(usbDev)
+				if err != nil {
+					return err
+				}
+			}
+
 			err = d.deviceDetachNIC(dev.Name())
 			if err != nil {
 				return err
 			}
 		}
 
-		// Detach USB drom running instance.
+		// Detach USB from running instance.
 		if configCopy["type"] == "usb" && runConf != nil {
 			for _, usbDev := range runConf.USBDevice {
 				err = d.deviceDetachUSB(usbDev)
@@ -2848,27 +2817,55 @@ if [ ! -e "systemd" ] || [ ! -e "lxd-agent" ]; then
     exit 1
 fi
 
-if [ ! -e "/lib/systemd/system" ]; then
+# systemd systems always have /run/systemd/system/ created on boot.
+if [ ! -d "/run/systemd/system/" ]; then
     echo "This script only works on systemd systems"
     exit 1
 fi
 
+for path in "/lib/systemd" "/usr/lib/systemd"; do
+    [ -d "${path}/system" ] || continue
+    LIB_SYSTEMD="${path}"
+    break
+done
+
+if [ ! -d "${LIB_SYSTEMD:-}" ]; then
+    echo "Could not find path to systemd"
+    exit 1
+fi
+
+for path in "/lib/udev" "/usr/lib/udev"; do
+    [ -d "${path}/rules.d/" ] || continue
+    LIB_UDEV="${path}"
+    break
+done
+
+if [ ! -d "${LIB_UDEV:-}" ]; then
+    echo "Could not find path to udev"
+    exit 1
+fi
+
 # Cleanup former units.
-rm -f /lib/systemd/system/lxd-agent-9p.service \
-    /lib/systemd/system/lxd-agent-virtiofs.service \
+rm -f "${LIB_SYSTEMD}/system/lxd-agent-9p.service" \
+    "${LIB_SYSTEMD}/system/lxd-agent-virtiofs.service" \
     /etc/systemd/system/multi-user.target.wants/lxd-agent-9p.service \
     /etc/systemd/system/multi-user.target.wants/lxd-agent-virtiofs.service \
     /etc/systemd/system/multi-user.target.wants/lxd-agent.service
 
 # Install the units.
-cp udev/99-lxd-agent.rules /lib/udev/rules.d/
-cp systemd/lxd-agent.service /lib/systemd/system/
-cp systemd/lxd-agent-setup /lib/systemd/
+cp udev/99-lxd-agent.rules "${LIB_UDEV}/rules.d/"
+cp systemd/lxd-agent-setup "${LIB_SYSTEMD}/"
+if [ "/lib/systemd" = "${LIB_SYSTEMD}" ]; then
+  cp systemd/lxd-agent.service "${LIB_SYSTEMD}/system/"
+else
+  # Adapt paths for systemd's lib location
+  sed "/=\/lib\/systemd/ s|=/lib/systemd|=${LIB_SYSTEMD}|" systemd/lxd-agent.service > "${LIB_SYSTEMD}/system/lxd-agent.service"
+fi
 systemctl daemon-reload
 
 # SELinux handling.
 if getenforce >/dev/null 2>&1; then
-    semanage fcontext -a -t bin_t /run/lxd_agent/lxd-agent
+    semanage fcontext -a -t bin_t /var/run/lxd_agent/lxd-agent
 fi
 
 echo ""
@@ -3143,29 +3140,31 @@ func (d *qemu) generateQemuConfigFile(cpuInfo *cpuTopology, mountInfo *storagePo
 		}
 
 		// Determine expected firmware.
-		firmwares := vmGenericFirmwares
+		var firmwares []edk2.FirmwarePair
 		if shared.IsTrue(d.expandedConfig["security.csm"]) {
-			firmwares = vmLegacyFirmwares
+			firmwares = edk2.GetArchitectureFirmwarePairsForUsage(d.architecture, edk2.CSM)
 		} else if shared.IsTrueOrEmpty(d.expandedConfig["security.secureboot"]) {
-			firmwares = vmSecurebootFirmwares
+			firmwares = edk2.GetArchitectureFirmwarePairsForUsage(d.architecture, edk2.SECUREBOOT)
+		} else {
+			firmwares = edk2.GetArchitectureFirmwarePairsForUsage(d.architecture, edk2.GENERIC)
 		}
 
-		var vmfCode string
+		var efiCode string
 		for _, firmware := range firmwares {
-			if shared.PathExists(filepath.Join(d.Path(), firmware.vars)) {
-				vmfCode = firmware.code
+			if shared.PathExists(filepath.Join(d.Path(), filepath.Base(firmware.Vars))) {
+				efiCode = firmware.Code
 				break
 			}
 		}
 
-		if vmfCode == "" {
-			return "", nil, fmt.Errorf("Unable to locate matching firmware: %+v", firmwares)
+		if efiCode == "" {
+			return "", nil, fmt.Errorf("Unable to locate matching VM firmware: %+v", firmwares)
 		}
 
 		// As 2MB firmware was deprecated in the LXD snap we have to regenerate NVRAM for VMs which used the 2MB one.
 		// As EDK2-based CSM firmwares were deprecated in the LXD snap we want to force VMs to start using SeaBIOS directly.
-		isOVMF2MB := (strings.Contains(vmfCode, "OVMF") && !strings.Contains(vmfCode, "4MB"))
-		isOVMFCSM := (strings.Contains(vmfCode, "OVMF") && strings.Contains(vmfCode, "CSM"))
+		isOVMF2MB := (strings.Contains(efiCode, "OVMF") && !strings.Contains(efiCode, "4MB"))
+		isOVMFCSM := (strings.Contains(efiCode, "OVMF") && strings.Contains(efiCode, "CSM"))
 		if shared.InSnap() && (isOVMF2MB || isOVMFCSM) {
 			err = d.setupNvram()
 			if err != nil {
@@ -3173,23 +3172,21 @@ func (d *qemu) generateQemuConfigFile(cpuInfo *cpuTopology, mountInfo *storagePo
 			}
 
 			// force to use a top-priority firmware
-			vmfCode = firmwares[0].code
+			efiCode = firmwares[0].Code
 		}
 
-		// Use debug version of firmware. (Only works for "default" (4MB, no CSM) firmware flavor)
-		if shared.IsTrue(d.localConfig["boot.debug_edk2"]) && vmfCode == vmGenericFirmwares[0].code {
-			vmfCode = vmDebugFirmware
-		}
-
-		fwPath := d.fwPath(vmfCode)
-		if fwPath == "" {
-			return "", nil, fmt.Errorf("Unable to locate the file for firmware %q", vmfCode)
+		// Use debug version of firmware. (Only works for "preferred" (OVMF 4MB, no CSM) firmware flavor)
+		if shared.IsTrue(d.localConfig["boot.debug_edk2"]) && efiCode == firmwares[0].Code {
+			efiCode = filepath.Join(filepath.Dir(efiCode), edk2.OVMFDebugFirmware)
 		}
 
 		driveFirmwareOpts := qemuDriveFirmwareOpts{
-			roPath:    fwPath,
+			roPath:    efiCode,
 			nvramPath: fmt.Sprintf("/dev/fd/%d", d.addFileDescriptor(fdFiles, nvRAMFile)),
 		}
+
+		// Set firmware path for apparmor profile.
+		d.firmwarePath = driveFirmwareOpts.roPath
 
 		cfg = append(cfg, qemuDriveFirmware(&driveFirmwareOpts)...)
 	}
@@ -3434,9 +3431,9 @@ func (d *qemu) generateQemuConfigFile(cpuInfo *cpuTopology, mountInfo *storagePo
 				}
 
 				qemuDev := make(map[string]string)
-				if busName == "nvme" {
+				if shared.ValueInSlice(busName, []string{"nvme", "virtio-blk"}) {
 					// Allocate a PCI(e) port and write it to the config file so QMP can "hotplug" the
-					// NVME drive into it later.
+					// drive into it later.
 					devBus, devAddr, multi := bus.allocate(busFunctionGroupNone)
 
 					// Populate the qemu device with port info.
@@ -4082,7 +4079,7 @@ func (d *qemu) addDriveConfig(qemuDev map[string]string, bootIndexes map[string]
 		} else if media == "cdrom" {
 			qemuDev["driver"] = "scsi-cd"
 		}
-	} else if bus == "nvme" {
+	} else if shared.ValueInSlice(bus, []string{"nvme", "virtio-blk"}) {
 		if qemuDev["bus"] == "" {
 			// Figure out a hotplug slot.
 			pciDevID := qemuPCIDeviceIDStart
@@ -4099,12 +4096,12 @@ func (d *qemu) addDriveConfig(qemuDev map[string]string, bootIndexes map[string]
 			}
 
 			pciDeviceName := fmt.Sprintf("%s%d", busDevicePortPrefix, pciDevID)
-			d.logger.Debug("Using PCI bus device to hotplug NVME into", logger.Ctx{"device": driveConf.DevName, "port": pciDeviceName})
+			d.logger.Debug("Using PCI bus device to hotplug drive into", logger.Ctx{"device": driveConf.DevName, "port": pciDeviceName})
 			qemuDev["bus"] = pciDeviceName
 			qemuDev["addr"] = "00.0"
 		}
 
-		qemuDev["driver"] = "nvme"
+		qemuDev["driver"] = bus
 	}
 
 	if bootIndexes != nil {
@@ -5928,67 +5925,6 @@ func (d *qemu) updateMemoryLimit(newLimit string) error {
 	return fmt.Errorf("Failed setting memory to %dMiB (currently %dMiB) as it was taking too long", newSizeMB, curSizeMB)
 }
 
-func (d *qemu) removeUnixDevices() error {
-	// Check that we indeed have devices to remove.
-	if !shared.PathExists(d.DevicesPath()) {
-		return nil
-	}
-
-	// Load the directory listing.
-	dents, err := os.ReadDir(d.DevicesPath())
-	if err != nil {
-		return err
-	}
-
-	for _, f := range dents {
-		// Skip non-Unix devices.
-		if !strings.HasPrefix(f.Name(), "forkmknod.unix.") && !strings.HasPrefix(f.Name(), "unix.") && !strings.HasPrefix(f.Name(), "infiniband.unix.") {
-			continue
-		}
-
-		// Remove the entry
-		devicePath := filepath.Join(d.DevicesPath(), f.Name())
-		err := os.Remove(devicePath)
-		if err != nil {
-			d.logger.Error("Failed removing unix device", logger.Ctx{"err": err, "path": devicePath})
-		}
-	}
-
-	return nil
-}
-
-func (d *qemu) removeDiskDevices() error {
-	// Check that we indeed have devices to remove.
-	if !shared.PathExists(d.DevicesPath()) {
-		return nil
-	}
-
-	// Load the directory listing.
-	dents, err := os.ReadDir(d.DevicesPath())
-	if err != nil {
-		return err
-	}
-
-	for _, f := range dents {
-		// Skip non-disk devices
-		if !strings.HasPrefix(f.Name(), "disk.") {
-			continue
-		}
-
-		// Always try to unmount the host side.
-		_ = unix.Unmount(filepath.Join(d.DevicesPath(), f.Name()), unix.MNT_DETACH)
-
-		// Remove the entry.
-		diskPath := filepath.Join(d.DevicesPath(), f.Name())
-		err := os.Remove(diskPath)
-		if err != nil {
-			d.logger.Error("Failed to remove disk device path", logger.Ctx{"err": err, "path": diskPath})
-		}
-	}
-
-	return nil
-}
-
 func (d *qemu) cleanup() {
 	// Unmount any leftovers
 	_ = d.removeUnixDevices()
@@ -6114,7 +6050,7 @@ func (d *qemu) delete(force bool) error {
 
 	// Check if instance is delete protected.
 	if !force && shared.IsTrue(d.expandedConfig["security.protection.delete"]) && !d.IsSnapshot() {
-		return fmt.Errorf("Instance is protected")
+		return fmt.Errorf("Instance is protected from being deleted")
 	}
 
 	// Delete any persistent warnings for instance.
@@ -6440,7 +6376,7 @@ func (d *qemu) Export(w io.Writer, properties map[string]string, expiration time
 
 	cmd = append(cmd, mountInfo.DiskPath, fPath)
 
-	_, err = apparmor.QemuImg(d.state.OS, cmd, mountInfo.DiskPath, fPath)
+	_, err = apparmor.QemuImg(d.state.OS, cmd, mountInfo.DiskPath, fPath, nil)
 	if err != nil {
 		return meta, fmt.Errorf("Failed converting instance to qcow2: %w", err)
 	}
@@ -6855,6 +6791,51 @@ func (d *qemu) migrateSendLive(pool storagePools.Pool, clusterMoveSourceName str
 	err = pool.MigrateInstance(d, filesystemConn, volSourceArgs, d.op)
 	if err != nil {
 		return err
+	}
+
+	// Derive the effective storage project name from the instance config's project.
+	storageProjectName, err := project.StorageVolumeProject(d.state.DB.Cluster, d.project.Name, dbCluster.StoragePoolVolumeTypeCustom)
+	if err != nil {
+		return err
+	}
+
+	// Notify the shared disks that they're going to be accessed from another system.
+	diskPools := make(map[string]storagePools.Pool, len(d.expandedDevices))
+	for _, dev := range d.expandedDevices.Sorted() {
+		if dev.Config["type"] != "disk" || dev.Config["path"] == "/" {
+			continue
+		}
+
+		poolName := dev.Config["pool"]
+		if poolName == "" {
+			continue
+		}
+
+		diskPool, ok := diskPools[poolName]
+		if !ok {
+			// Load the pool for the disk.
+			diskPool, err = storagePools.LoadByName(d.state, poolName)
+			if err != nil {
+				return fmt.Errorf("Failed loading storage pool: %w", err)
+			}
+
+			// Save it to the pools map to avoid loading it from the DB multiple times.
+			diskPools[poolName] = diskPool
+		}
+
+		// Setup the volume entry.
+		extraSourceArgs := &migration.VolumeSourceArgs{
+			ClusterMove: true,
+		}
+
+		vol := diskPool.GetVolume(storageDrivers.VolumeTypeCustom, storageDrivers.ContentTypeBlock, project.StorageVolume(storageProjectName, dev.Config["source"]), nil)
+		volCopy := storageDrivers.NewVolumeCopy(vol)
+
+		// Call MigrateVolume on the source.
+		err = diskPool.Driver().MigrateVolume(volCopy, nil, extraSourceArgs, nil)
+		if err != nil {
+			return fmt.Errorf("Failed to prepare device %q for migration: %w", dev.Name, err)
+		}
 	}
 
 	// Non-shared storage snapshot transfer.
@@ -7336,6 +7317,51 @@ func (d *qemu) MigrateReceive(args instance.MigrateReceiveArgs) error {
 		err = pool.CreateInstanceFromMigration(d, filesystemConn, volTargetArgs, d.op)
 		if err != nil {
 			return fmt.Errorf("Failed creating instance on target: %w", err)
+		}
+
+		// Derive the effective storage project name from the instance config's project.
+		storageProjectName, err := project.StorageVolumeProject(d.state.DB.Cluster, d.project.Name, dbCluster.StoragePoolVolumeTypeCustom)
+		if err != nil {
+			return err
+		}
+
+		// Notify the shared disks that they're going to be accessed from another system.
+		diskPools := make(map[string]storagePools.Pool, len(d.expandedDevices))
+		for _, dev := range d.expandedDevices.Sorted() {
+			if dev.Config["type"] != "disk" || dev.Config["path"] == "/" {
+				continue
+			}
+
+			poolName := dev.Config["pool"]
+			if poolName == "" {
+				continue
+			}
+
+			diskPool, ok := diskPools[poolName]
+			if !ok {
+				// Load the pool for the disk.
+				diskPool, err = storagePools.LoadByName(d.state, poolName)
+				if err != nil {
+					return fmt.Errorf("Failed loading storage pool: %w", err)
+				}
+
+				// Save it to the pools map to avoid loading it from the DB multiple times.
+				diskPools[poolName] = diskPool
+			}
+
+			// Setup the volume entry.
+			extraTargetArgs := migration.VolumeTargetArgs{
+				ClusterMoveSourceName: args.ClusterMoveSourceName,
+			}
+
+			vol := diskPool.GetVolume(storageDrivers.VolumeTypeCustom, storageDrivers.ContentTypeBlock, project.StorageVolume(storageProjectName, dev.Config["source"]), nil)
+			volCopy := storageDrivers.NewVolumeCopy(vol)
+
+			// Create a volume from the migration.
+			err = diskPool.Driver().CreateVolumeFromMigration(volCopy, nil, extraTargetArgs, nil, nil)
+			if err != nil {
+				return fmt.Errorf("Failed to prepare device %q for migration: %w", dev.Name, err)
+			}
 		}
 
 		// Only delete all instance volumes on error if the pool volume creation has succeeded to
@@ -8498,6 +8524,11 @@ func (d *qemu) devlxdEventSend(eventType string, eventMessage map[string]any) er
 
 	client, err := d.getAgentClient()
 	if err != nil {
+		// Don't fail if the VM simply doesn't have an agent.
+		if err == errQemuAgentOffline {
+			return nil
+		}
+
 		return err
 	}
 
@@ -8614,18 +8645,21 @@ func (d *qemu) checkFeatures(hostArch int, qemuPath string) (map[string]any, err
 	}
 
 	if d.architectureSupportsUEFI(hostArch) {
-		vmfCode := "OVMF_CODE.fd"
-
-		if shared.InSnap() {
-			vmfCode = vmGenericFirmwares[0].code
+		// Try to locate a UEFI firmware.
+		var efiPath string
+		for _, firmwarePair := range edk2.GetArchitectureFirmwarePairsForUsage(hostArch, edk2.GENERIC) {
+			if shared.PathExists(firmwarePair.Code) {
+				logger.Info("Found VM UEFI firmware", logger.Ctx{"code": firmwarePair.Code, "vars": firmwarePair.Vars})
+				efiPath = firmwarePair.Code
+				break
+			}
 		}
 
-		fwPath := d.fwPath(vmfCode)
-		if fwPath == "" {
-			return nil, fmt.Errorf("Unable to locate the file for firmware %q", vmfCode)
+		if efiPath == "" {
+			return nil, fmt.Errorf("Unable to locate a VM UEFI firmware")
 		}
 
-		qemuArgs = append(qemuArgs, "-drive", fmt.Sprintf("if=pflash,format=raw,readonly=on,file=%s", fwPath))
+		qemuArgs = append(qemuArgs, "-drive", fmt.Sprintf("if=pflash,format=raw,readonly=on,file=%s", efiPath))
 	}
 
 	var stderr bytes.Buffer

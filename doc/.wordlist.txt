@@ -8,6 +8,7 @@ balancer
 Charmhub
 CLI
 Diátaxis
+Dqlite
 dropdown
 EBS
 EKS
@@ -53,6 +54,7 @@ UI
 UUID
 VDI
 VHDX
+VIRTIO
 VM
 VMDK
 YAML

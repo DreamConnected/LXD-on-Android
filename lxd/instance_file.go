@@ -176,7 +176,7 @@ func instanceFileGet(s *state.State, inst instance.Instance, path string, r *htt
 		fileType = "symlink"
 	}
 
-	fs := stat.Sys().(*sftp.FileStat)
+	fs, _ := stat.Sys().(*sftp.FileStat)
 
 	// Prepare the response.
 	headers := map[string]string{
@@ -212,7 +212,7 @@ func instanceFileGet(s *state.State, inst instance.Instance, path string, r *htt
 		}
 
 		s.Events.SendLifecycle(inst.Project().Name, lifecycle.InstanceFileRetrieved.Event(inst, logger.Ctx{"path": path}))
-		return response.FileResponse(r, files, headers)
+		return response.FileResponse(files, headers)
 	} else if fileType == "symlink" {
 		// Find symlink target.
 		target, err := client.ReadLink(path)
@@ -243,7 +243,7 @@ func instanceFileGet(s *state.State, inst instance.Instance, path string, r *htt
 		files[0].FileSize = int64(len(target))
 
 		s.Events.SendLifecycle(inst.Project().Name, lifecycle.InstanceFileRetrieved.Event(inst, logger.Ctx{"path": path}))
-		return response.FileResponse(r, files, headers)
+		return response.FileResponse(files, headers)
 	} else if fileType == "directory" {
 		dirEnts := []string{}
 
@@ -339,7 +339,7 @@ func instanceFileHead(inst instance.Instance, path string) response.Response {
 		fileType = "symlink"
 	}
 
-	fs := stat.Sys().(*sftp.FileStat)
+	fs, _ := stat.Sys().(*sftp.FileStat)
 
 	// Prepare the response.
 	headers := map[string]string{
@@ -348,6 +348,11 @@ func instanceFileHead(inst instance.Instance, path string) response.Response {
 		"X-LXD-mode":     fmt.Sprintf("%04o", stat.Mode().Perm()),
 		"X-LXD-modified": stat.ModTime().UTC().String(),
 		"X-LXD-type":     fileType,
+	}
+
+	if fileType == "file" {
+		headers["Content-Type"] = "application/octet-stream"
+		headers["Content-Length"] = fmt.Sprintf("%d", stat.Size())
 	}
 
 	// Return an empty body (per RFC for HEAD).

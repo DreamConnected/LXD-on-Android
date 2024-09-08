@@ -972,6 +972,28 @@ test_projects_restrictions() {
   lxc project set p1 restricted.devices.disk=block
   ! lxc profile device add default data disk pool="${pool}" path=/mnt source="v-proj$$" || false
 
+  restrictedDir="/opt/projects_restricted"
+  mkdir "${restrictedDir}"
+  tmpDir=$(mktemp -d)
+  optDir=$(mktemp -d --tmpdir="${restrictedDir}")
+
+  # Block unmanaged disk devices
+  lxc project set p1 restricted.devices.disk=managed
+  ! lxc profile device add default data disk path=/mnt source="${tmpDir}" || false
+
+  # Allow unmanaged disk devices
+  lxc project set p1 restricted.devices.disk=allow
+  lxc profile device add default data disk path=/mnt source="${tmpDir}"
+  lxc profile device remove default data
+
+  # Path restrictions
+  lxc project set p1 restricted.devices.disk.paths="${restrictedDir}"
+  ! lxc profile device add default data disk path=/mnt source="${tmpDir}" || false
+  lxc profile device add default data disk path=/mnt source="${optDir}"
+  lxc profile device remove default data
+
+  rm -r "${tmpDir}" "${optDir}" "${restrictedDir}"
+
   # Setting restricted.containers.nesting to 'allow' makes it possible to create
   # nested containers.
   lxc project set p1 restricted.containers.nesting=allow
@@ -1059,4 +1081,31 @@ test_projects_usage() {
   lxc delete c1 --project test-usage
   lxc image delete testimage --project test-usage
   lxc project delete test-usage
+}
+
+test_projects_yaml() {
+  lxc project create test-project-yaml <<EOF
+config:
+  limits.cpu: 2
+  limits.memory: 2048MiB
+description: Test project using YAML
+EOF
+
+  lxc profile show default --project default | lxc profile edit default --project test-project-yaml
+  lxc profile set default --project test-project-yaml \
+    limits.cpu=1 \
+    limits.memory=512MiB
+
+  lxc profile device set default root size=3GiB --project test-project-yaml
+  deps/import-busybox --project test-project-yaml --alias testimage
+
+  lxc init testimage c1 --project test-project-yaml
+  lxc init testimage c2 --project test-project-yaml
+  ! lxc init testimage c3 --project test-project-yaml || false # Should fail due to the project limits.cpu=2 (here we would have 3 containers with 1 CPU each)
+
+  lxc delete -f c1 --project test-project-yaml
+  lxc delete -f c2 --project test-project-yaml
+
+  lxc image delete testimage --project test-project-yaml
+  lxc project delete test-project-yaml
 }

@@ -49,6 +49,12 @@ type InstancesPost struct {
 	// Type (container or virtual-machine)
 	// Example: container
 	Type InstanceType `json:"type" yaml:"type"`
+
+	// Whether to start the instance after creation
+	// Example: true
+	//
+	// API extension: instance_create_start
+	Start bool `json:"start" yaml:"start"`
 }
 
 // InstancesPut represents the fields available for a mass update.
@@ -424,7 +430,7 @@ type InstanceSource struct {
 	// Example: 12345
 	//
 	// API extension: instance_import_conversion
-	SourceDiskSize int64 `json:"sourceDiskSize" yaml:"sourceDiskSize"`
+	SourceDiskSize int64 `json:"source_disk_size" yaml:"source_disk_size"`
 
 	// Optional list of options that are used during image conversion (for conversion).
 	// Example: ["format"]

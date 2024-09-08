@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"context"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -37,6 +39,7 @@ import (
 	"github.com/canonical/lxd/lxd/migration"
 	"github.com/canonical/lxd/lxd/operations"
 	"github.com/canonical/lxd/lxd/project"
+	"github.com/canonical/lxd/lxd/project/limits"
 	"github.com/canonical/lxd/lxd/response"
 	"github.com/canonical/lxd/lxd/rsync"
 	"github.com/canonical/lxd/lxd/state"
@@ -54,6 +57,7 @@ import (
 	"github.com/canonical/lxd/shared/logger"
 	"github.com/canonical/lxd/shared/revert"
 	"github.com/canonical/lxd/shared/units"
+	"github.com/canonical/lxd/shared/version"
 )
 
 var unavailablePools = make(map[string]struct{})
@@ -731,14 +735,16 @@ func (b *lxdBackend) CreateInstanceFromBackup(srcBackup backup.Info, srcData io.
 	}
 
 	for _, snapName := range srcBackup.Snapshots {
-		err = instance.ValidName(snapName, true)
+		snapInstName := fmt.Sprintf("%s%s%s", srcBackup.Name, shared.SnapshotDelimiter, snapName)
+		err = instance.ValidName(snapInstName, true)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
 
 	for _, snap := range srcBackup.Config.Snapshots {
-		err = instance.ValidName(snap.Name, true)
+		snapInstName := fmt.Sprintf("%s%s%s", srcBackup.Name, shared.SnapshotDelimiter, snap.Name)
+		err = instance.ValidName(snapInstName, true)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1783,7 +1789,7 @@ func (b *lxdBackend) imageFiller(fingerprint string, op *operations.Operation) f
 			metadata := make(map[string]any)
 			tracker = &ioprogress.ProgressTracker{
 				Handler: func(percent, speed int64) {
-					shared.SetProgressMetadata(metadata, "create_instance_from_image_unpack", "Unpack", percent, 0, speed)
+					shared.SetProgressMetadata(metadata, "create_instance_from_image_unpack", "Unpacking image", percent, 0, speed)
 					_ = op.UpdateMetadata(metadata)
 				}}
 		}
@@ -1811,7 +1817,7 @@ func (b *lxdBackend) isoFiller(data io.Reader) func(vol drivers.Volume, rootBloc
 
 // imageConversionFiller returns a function that converts an image from the given path to the instance's volume.
 // Function returns the unpacked image size on success. Otherwise, it returns -1 for size and an error.
-func (b *lxdBackend) imageConversionFiller(imgPath string, imgFormat string) func(vol drivers.Volume, rootBlockPath string, allowUnsafeResize bool) (sizeInBytes int64, err error) {
+func (b *lxdBackend) imageConversionFiller(imgPath string, imgFormat string, op *operations.Operation) func(vol drivers.Volume, rootBlockPath string, allowUnsafeResize bool) (sizeInBytes int64, err error) {
 	return func(vol drivers.Volume, rootBlockPath string, allowUnsafeResize bool) (int64, error) {
 		diskPath, err := b.driver.GetVolumeDiskPath(vol)
 		if err != nil {
@@ -1824,20 +1830,39 @@ func (b *lxdBackend) imageConversionFiller(imgPath string, imgFormat string) fun
 			return -1, fmt.Errorf("Unsupported image format %q, allowed formats are [%s]", imgFormat, strings.Join(supportedImageFormats, ", "))
 		}
 
+		// Setup the progress tracker.
+		var tracker *ioprogress.ProgressTracker
+		if op != nil {
+			metadata := make(map[string]any)
+			tracker = &ioprogress.ProgressTracker{
+				Handler: func(percent, speed int64) {
+					displayPrefix := fmt.Sprintf("Converting image format from %s to raw", imgFormat)
+					shared.SetProgressMetadata(metadata, "format_progress", displayPrefix, percent, 0, speed)
+					_ = op.UpdateMetadata(metadata)
+				},
+			}
+		}
+
 		// Convert uploaded image from backups directory into RAW format on the instance volume.
 		cmd := []string{
 			// Run with low priority to reduce CPU impact on other processes.
 			"nice", "-n19",
-			"qemu-img", "convert", "-f", imgFormat, "-O", "raw", imgPath, diskPath,
+			"qemu-img", "convert", "-p", "-f", imgFormat, "-O", "raw", imgPath, diskPath, "-t", "writeback",
 		}
 
-		b.logger.Debug("Image conversion started")
-		defer b.logger.Debug("Image conversion finished")
+		b.logger.Debug("Image conversion started", logger.Ctx{"from": imgFormat, "to": "raw"})
+		defer b.logger.Debug("Image conversion finished", logger.Ctx{"from": imgFormat, "to": "raw"})
 
-		out, err := apparmor.QemuImg(b.state.OS, cmd, imgPath, diskPath)
+		out, err := apparmor.QemuImg(b.state.OS, cmd, imgPath, diskPath, tracker)
 		if err != nil {
 			b.logger.Debug("Image conversion failed", logger.Ctx{"error": out})
 			return -1, fmt.Errorf("qemu-img convert: failed to convert image from %q to %q format: %v", imgFormat, "raw", err)
+		}
+
+		// Remove the image after the conversion to free up the space as soon as possible.
+		err = os.Remove(imgPath)
+		if err != nil {
+			return -1, err
 		}
 
 		// Convert volume size to bytes.
@@ -1862,7 +1887,7 @@ func (b *lxdBackend) recvVolumeFiller(conn io.ReadWriteCloser, contentType drive
 			}
 		} else {
 			// Receive block volume.
-			to, err := os.OpenFile(rootBlockPath, os.O_WRONLY|os.O_TRUNC, 0)
+			to, err := os.OpenFile(rootBlockPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
 			if err != nil {
 				return -1, fmt.Errorf("Error opening file for writing %q: %w", rootBlockPath, err)
 			}
@@ -1891,7 +1916,7 @@ func (b *lxdBackend) recvBlockVol(toFile *os.File, volName string, conn io.ReadW
 
 	var wrapper *ioprogress.ProgressTracker
 	if args.TrackProgress {
-		wrapper = migration.ProgressTracker(op, "block_progress", volName)
+		wrapper = migration.ProgressTracker(op, "block_progress", "Transferring instance")
 	}
 
 	// Setup progress tracker.
@@ -1908,6 +1933,18 @@ func (b *lxdBackend) recvBlockVol(toFile *os.File, volName string, conn io.ReadW
 		return fmt.Errorf("Error copying from migration connection to %q: %w", toFile.Name(), err)
 	}
 
+	// Reset the file's read pointer to the beginning, otherwise we cannot read the tar's header.
+	_, err = toFile.Seek(0, io.SeekStart)
+	if err != nil {
+		return err
+	}
+
+	// Ensure that the received file is not a tarball, which is also the case for OVA format.
+	_, err = tar.NewReader(toFile).Next()
+	if err == nil {
+		return fmt.Errorf("Instance cannot be imported from a tar archive or OVA file")
+	}
+
 	return toFile.Close()
 }
 
@@ -1917,7 +1954,7 @@ func (b *lxdBackend) recvFS(path string, volName string, conn io.ReadWriteCloser
 
 	var wrapper *ioprogress.ProgressTracker
 	if args.TrackProgress {
-		wrapper = migration.ProgressTracker(op, "fs_progress", volName)
+		wrapper = migration.ProgressTracker(op, "fs_progress", "Transferring instance")
 	}
 
 	return rsync.Recv(shared.AddSlash(path), conn, wrapper, args.MigrationType.Features)
@@ -2341,9 +2378,9 @@ func (b *lxdBackend) CreateInstanceFromMigration(inst instance.Instance, conn io
 	return nil
 }
 
-// CreateInstanceFromConversion receives an image and creates and instance from it.
-// Depending on provided conversionOptions, the image is also converted into the
-// raw format.
+// CreateInstanceFromConversion receives a disk or filesystem and creates and instance from it.
+// Based on the provided conversion options, the received disk is converted into the raw format
+// and/or the virtio drivers are injected into it.
 func (b *lxdBackend) CreateInstanceFromConversion(inst instance.Instance, conn io.ReadWriteCloser, args migration.VolumeTargetArgs, op *operations.Operation) error {
 	l := b.logger.AddContext(logger.Ctx{"project": inst.Project().Name, "instance": inst.Name(), "args": fmt.Sprintf("%+v", args)})
 	l.Debug("CreateInstanceFromConversion started")
@@ -2426,10 +2463,6 @@ func (b *lxdBackend) CreateInstanceFromConversion(inst instance.Instance, conn i
 		return err
 	}
 
-	// Override args.Name and args.Config to ensure volume is created based on instance.
-	args.Config = vol.Config()
-	args.Name = inst.Name()
-
 	// Get instance's root disk device from local devices. Do not use expanded devices, as we want
 	// to determine whether the root disk volume size was explicitly set by the client.
 	canResizeRootDiskSize := true
@@ -2452,7 +2485,7 @@ func (b *lxdBackend) CreateInstanceFromConversion(inst instance.Instance, conn i
 		imgPath := filepath.Join(shared.VarPath("backups"), conversionID)
 
 		// Create new file in backups directory.
-		to, err := os.OpenFile(imgPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+		to, err := os.OpenFile(imgPath, os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0600)
 		if err != nil {
 			return fmt.Errorf("Error opening file for writing %q: %w", imgPath, err)
 		}
@@ -2470,47 +2503,28 @@ func (b *lxdBackend) CreateInstanceFromConversion(inst instance.Instance, conn i
 		}
 
 		// Extract image format and size.
-		cmd := []string{
-			// Use prlimit because qemu-img can consume considerable RAM & CPU time if fed
-			// a maliciously crafted disk image. Since cloud tenants are not to be trusted,
-			// ensure QEMU is limited to 1 GiB address space and 2 seconds of CPU time.
-			// This should be more than enough for real world images.
-			"prlimit", "--cpu=2", "--as=1073741824",
-			"qemu-img", "info", imgPath, "--output", "json",
-		}
-
-		out, err := apparmor.QemuImg(b.state.OS, cmd, imgPath, "")
+		imgFormat, imgBytes, err := qemuImageInfo(b.state.OS, imgPath, nil)
 		if err != nil {
-			return fmt.Errorf("qemu-img info: %v", err)
+			return err
 		}
 
-		imgInfo := struct {
-			Format string `json:"format"`
-			Bytes  int64  `json:"virtual-size"`
-		}{}
-
-		err = json.Unmarshal([]byte(out), &imgInfo)
-		if err != nil {
-			return fmt.Errorf("Failed to parse image information: %v", err)
-		}
-
-		srcDiskSize = imgInfo.Bytes
+		srcDiskSize = imgBytes
 
 		if canResizeRootDiskSize {
 			// Set size of the volume to the uncompressed image size.
-			l.Debug("Setting volume size to uncompressed image size", logger.Ctx{"size": fmt.Sprintf("%d", imgInfo.Bytes)})
-			args.Config["size"] = fmt.Sprintf("%d", imgInfo.Bytes)
+			l.Debug("Setting volume size to uncompressed image size", logger.Ctx{"size": fmt.Sprintf("%d", imgBytes)})
+			vol.SetConfigSize(fmt.Sprintf("%d", imgBytes))
 		}
 
 		// Convert received image into intance volume.
-		volFiller.Fill = b.imageConversionFiller(imgPath, imgInfo.Format)
+		volFiller.Fill = b.imageConversionFiller(imgPath, imgFormat, op)
 	} else {
 		// If volume size is provided, then use that as block volume size instead of pool default.
 		// This way if the volume being received is larger than the pool default size, the created
 		// block volume will still be able to accommodate it.
 		if canResizeRootDiskSize && contentType == drivers.ContentTypeBlock && args.VolumeSize > 0 {
 			l.Debug("Setting volume size to source disk size", logger.Ctx{"size": args.VolumeSize})
-			args.Config["size"] = fmt.Sprintf("%d", args.VolumeSize)
+			vol.SetConfigSize(fmt.Sprintf("%d", args.VolumeSize))
 		}
 
 		srcDiskSize = args.VolumeSize
@@ -2540,14 +2554,71 @@ func (b *lxdBackend) CreateInstanceFromConversion(inst instance.Instance, conn i
 		return fmt.Errorf("Volume size (%s) is lower then source disk size (%s)", volSize, imgSize)
 	}
 
-	volCopy := drivers.NewVolumeCopy(vol)
-
-	err = b.driver.CreateVolume(volCopy.Volume, &volFiller, op)
+	err = b.driver.CreateVolume(vol, &volFiller, op)
 	if err != nil {
 		return err
 	}
 
-	revert.Add(func() { _ = b.driver.DeleteVolume(volCopy.Volume, op) })
+	revert.Add(func() { _ = b.driver.DeleteVolume(vol, op) })
+
+	// At this point, the instance's volume is populated. If "virtio" option is enabled,
+	// inject the virtio drivers.
+	if slices.Contains(args.ConversionOptions, "virtio") {
+		b.logger.Debug("Inject virtio drivers started")
+		defer b.logger.Debug("Inject virtio drivers finished")
+
+		err = b.driver.MountVolume(vol, op)
+		if err != nil {
+			return err
+		}
+
+		defer func() { _, _ = b.driver.UnmountVolume(vol, true, op) }()
+
+		diskPath, err := b.driver.GetVolumeDiskPath(vol)
+		if err != nil {
+			return err
+		}
+
+		out, err := exec.Command("virt-v2v-in-place", "--version").CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("Failed to get virt-v2v-in-place version: %w (%s)", err, string(out))
+		}
+
+		// Extract virt-v2v-in-place version (format is "virt-v2v-in-place 1.2.3").
+		v2vVersionParts := strings.Split(strings.TrimSpace(string(out)), " ")
+		v2vVersion, err := version.NewDottedVersion(v2vVersionParts[len(v2vVersionParts)-1])
+		if err != nil {
+			return err
+		}
+
+		minVersion, err := version.NewDottedVersion("2.3.4")
+		if err != nil {
+			return err
+		}
+
+		// Ensure virt-v2v-in-place version is higher then or equal to the minimum required version.
+		if v2vVersion.Compare(minVersion) < 0 {
+			return fmt.Errorf("The virt-v2v-in-place version %q does not match the minimum required version %q", v2vVersion, minVersion)
+		}
+
+		// Run virt-v2v-in-place to inject virtio drivers.
+		cmd := exec.Command(
+			// Run with low priority to reduce the CPU impact on other processes.
+			"nice", "-n19",
+			"virt-v2v-in-place", "-i", "disk", "-if", "raw", "--block-driver", "virtio-scsi", diskPath,
+		)
+
+		// Instruct virt-v2v-in-place where to search for windows drivers.
+		cmd.Env = append(os.Environ(),
+			"VIRTIO_WIN=/usr/share/virtio-win/virtio-win.iso",
+			"VIRT_TOOLS_DATA_DIR=/usr/share/virt-tools",
+		)
+
+		out, err = cmd.CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("Failed to inject virtio drivers: %w (%s)", err, string(out))
+		}
+	}
 
 	err = b.ensureInstanceSymlink(inst.Type(), inst.Project().Name, inst.Name(), vol.MountPath())
 	if err != nil {
@@ -6322,8 +6393,8 @@ func (b *lxdBackend) ImportCustomVolume(projectName string, poolVol *backupConfi
 }
 
 // CreateCustomVolumeSnapshot creates a snapshot of a custom volume.
-func (b *lxdBackend) CreateCustomVolumeSnapshot(projectName, volName string, newSnapshotName string, newExpiryDate time.Time, op *operations.Operation) error {
-	l := b.logger.AddContext(logger.Ctx{"project": projectName, "volName": volName, "newSnapshotName": newSnapshotName, "newExpiryDate": newExpiryDate})
+func (b *lxdBackend) CreateCustomVolumeSnapshot(projectName, volName string, newSnapshotName string, newDescription string, newExpiryDate time.Time, op *operations.Operation) error {
+	l := b.logger.AddContext(logger.Ctx{"project": projectName, "volName": volName, "newSnapshotName": newSnapshotName, "newDescription": newDescription, "newExpiryDate": newExpiryDate})
 	l.Debug("CreateCustomVolumeSnapshot started")
 	defer l.Debug("CreateCustomVolumeSnapshot finished")
 
@@ -6384,9 +6455,15 @@ func (b *lxdBackend) CreateCustomVolumeSnapshot(projectName, volName string, new
 	revert := revert.New()
 	defer revert.Fail()
 
+	// Set the description if it's not empty.
+	description := parentVol.Description
+	if newDescription != "" {
+		description = newDescription
+	}
+
 	// Validate config and create database entry for new storage volume.
 	// Copy volume config from parent.
-	err = VolumeDBCreate(b, projectName, fullSnapshotName, parentVol.Description, drivers.VolumeTypeCustom, true, vol.Config(), time.Now().UTC(), newExpiryDate, drivers.ContentType(parentVol.ContentType), false, true)
+	err = VolumeDBCreate(b, projectName, fullSnapshotName, description, drivers.VolumeTypeCustom, true, vol.Config(), time.Now().UTC(), newExpiryDate, drivers.ContentType(parentVol.ContentType), false, true)
 	if err != nil {
 		return err
 	}
@@ -7495,7 +7572,7 @@ func (b *lxdBackend) CreateCustomVolumeFromISO(projectName string, volName strin
 	}
 
 	err := b.state.DB.Cluster.Transaction(b.state.ShutdownCtx, func(ctx context.Context, tx *db.ClusterTx) error {
-		return project.AllowVolumeCreation(b.state.GlobalConfig, tx, projectName, req)
+		return limits.AllowVolumeCreation(b.state.GlobalConfig, tx, projectName, req)
 	})
 	if err != nil {
 		return fmt.Errorf("Failed checking volume creation allowed: %w", err)
@@ -7600,7 +7677,7 @@ func (b *lxdBackend) CreateCustomVolumeFromBackup(srcBackup backup.Info, srcData
 	}
 
 	err = b.state.DB.Cluster.Transaction(b.state.ShutdownCtx, func(ctx context.Context, tx *db.ClusterTx) error {
-		return project.AllowVolumeCreation(b.state.GlobalConfig, tx, srcBackup.Project, req)
+		return limits.AllowVolumeCreation(b.state.GlobalConfig, tx, srcBackup.Project, req)
 	})
 	if err != nil {
 		return fmt.Errorf("Failed checking volume creation allowed: %w", err)

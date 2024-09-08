@@ -21,6 +21,7 @@ import (
 	"github.com/canonical/lxd/lxd/network"
 	"github.com/canonical/lxd/lxd/operations"
 	projecthelpers "github.com/canonical/lxd/lxd/project"
+	"github.com/canonical/lxd/lxd/project/limits"
 	"github.com/canonical/lxd/lxd/request"
 	"github.com/canonical/lxd/lxd/response"
 	"github.com/canonical/lxd/lxd/state"
@@ -213,12 +214,19 @@ func projectUsedBy(ctx context.Context, tx *db.ClusterTx, project *cluster.Proje
 
 	entityURLs, err := cluster.GetEntityURLs(ctx, tx.Tx(), project.Name, reportedEntityTypes...)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to get project used-by URLs")
+		return nil, fmt.Errorf("Failed to get project used-by URLs: %w", err)
 	}
 
 	var usedBy []string
 	for _, entityIDToURL := range entityURLs {
 		for _, u := range entityIDToURL {
+			// Omit the project query parameter if it is the default project.
+			if u.Query().Get("project") == api.ProjectDefaultName {
+				q := u.Query()
+				q.Del("project")
+				u.RawQuery = q.Encode()
+			}
+
 			usedBy = append(usedBy, u.String())
 		}
 	}
@@ -678,7 +686,7 @@ func projectChange(s *state.State, project *api.Project, req api.ProjectPut) res
 
 	// Update the database entry.
 	err = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-		err := projecthelpers.AllowProjectUpdate(s.GlobalConfig, tx, project.Name, req.Config, configChanged)
+		err := limits.AllowProjectUpdate(s.GlobalConfig, tx, project.Name, req.Config, configChanged)
 		if err != nil {
 			return err
 		}
@@ -925,7 +933,7 @@ func projectStateGet(d *Daemon, r *http.Request) response.Response {
 
 	// Get current limits and usage.
 	err = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-		result, err := projecthelpers.GetCurrentAllocations(s.GlobalConfig.Dump(), ctx, tx, name)
+		result, err := limits.GetCurrentAllocations(s.GlobalConfig.Dump(), ctx, tx, name)
 		if err != nil {
 			return err
 		}

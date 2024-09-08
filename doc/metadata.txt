@@ -56,7 +56,7 @@ See {ref}`devices-disk-initial-config` for more information.
 :required: "no"
 :shortdesc: "Bus for the device"
 :type: "string"
-Possible values are `virtio-scsi` or `nvme`.
+Possible values are `virtio-scsi`, `virtio-blk` or `nvme`.
 ```
 
 ```{config:option} io.cache device-disk-device-conf
@@ -275,9 +275,15 @@ You can omit the `MIG-` prefix when specifying this option.
 ```
 
 ```{config:option} id device-gpu-physical-device-conf
-:shortdesc: "DRM card ID of the GPU device"
+:shortdesc: "ID of the GPU device"
 :type: "string"
+The ID can either be the DRM card ID of the GPU device (container or VM) or a fully-qualified Container Device Interface (CDI) name (container only).
+Here are some examples of fully-qualified CDI names:
 
+- `nvidia.com/gpu=0`: Instructs LXD to operate a discrete GPU (dGPU) pass-through of brand NVIDIA with the first discovered GPU on your system. You can use the `nvidia-smi` tool on your host to find out which identifier to use.
+- `nvidia.com/gpu=1833c8b5-9aa0-5382-b784-68b7e77eb185`: Instructs LXD to operate a discrete GPU (dGPU) pass-through of brand NVIDIA with a given GPU unique identifier. This identifier should also appear with `nvidia-smi -L`.
+- `nvidia.com/igpu=all`: Instructs LXD to pass all the host integrated GPUs (iGPU) of brand NVIDIA. The concept of an index does not currently map to iGPUs. It is possible to list them with the `nvidia-smi -L` command. A special `nvgpu` mention should appear in the generated list to indicate a device to be an iGPU.
+- `nvidia.com/gpu=all`: Instructs LXD to pass all the host GPUs of brand NVIDIA through to the container.
 ```
 
 ```{config:option} mode device-gpu-physical-device-conf
@@ -2112,7 +2118,6 @@ See {ref}`dev-lxd` for more information.
 ```
 
 ```{config:option} security.devlxd.images instance-security
-:condition: "container"
 :defaultdesc: "`false`"
 :liveupdate: "no"
 :shortdesc: "Controls the availability of the `/1.0/images` API over `devlxd`"
@@ -2166,7 +2171,7 @@ See {ref}`container-security` for more information.
 ```{config:option} security.protection.delete instance-security
 :defaultdesc: "`false`"
 :liveupdate: "yes"
-:shortdesc: "Prevents the instance from being deleted"
+:shortdesc: "Whether to prevent the instance from being deleted"
 :type: "bool"
 
 ```
@@ -2178,6 +2183,14 @@ See {ref}`container-security` for more information.
 :shortdesc: "Whether to protect the file system from being UID/GID shifted"
 :type: "bool"
 Set this option to `true` to prevent the instance's file system from being UID/GID shifted on startup.
+```
+
+```{config:option} security.protection.start instance-security
+:defaultdesc: "`false`"
+:liveupdate: "yes"
+:shortdesc: "Whether to prevent the instance from being started"
+:type: "bool"
+
 ```
 
 ```{config:option} security.secureboot instance-security
@@ -2423,12 +2436,6 @@ Possible values are `true` or `false`.
 :shortdesc: "Network device original MAC"
 :type: "string"
 The original MAC that was used when moving a physical device into an instance.
-```
-
-```{config:option} volatile.<name>.last_state.ip_addresses instance-volatile
-:shortdesc: "Last used IP addresses"
-:type: "string"
-Comma-separated list of the last used IP addresses of the network device.
 ```
 
 ```{config:option} volatile.<name>.last_state.mtu instance-volatile

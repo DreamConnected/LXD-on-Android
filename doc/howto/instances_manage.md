@@ -131,6 +131,11 @@ Once it is running, you can select the {guilabel}`Terminal` tab to access the in
 ```
 ````
 
+### Prevent accidental start of instances
+
+To protect a specific instance from being started, set {config:option}`instance-security:security.protection.start` to `true` for the instance.
+See {ref}`instances-configure` for instructions.
+
 (instances-manage-stop)=
 ## Stop an instance
 
@@ -173,6 +178,7 @@ You can also stop several instances at the same time by selecting them in the in
 
 `````
 
+(instances-manage-delete)=
 ## Delete an instance
 
 If you don't need an instance anymore, you can remove it.
@@ -221,6 +227,7 @@ There are different ways to prevent accidental deletion of instances:
 
        lxc alias add delete "delete -i"
 
+(instances-manage-rebuild)=
 ## Rebuild an instance
 
 If you want to wipe and re-initialize the root disk of your instance but keep the instance configuration, you can rebuild the instance.

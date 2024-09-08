@@ -8,6 +8,11 @@ export LC_ALL="C"
 # Force UTC for consistency
 export TZ="UTC"
 
+if [ -z "${NO_PROXY:-}" ]; then
+  # Prevent proxy usage for some host names/IPs (comma-separated list)
+  export NO_PROXY="127.0.0.1"
+fi
+
 export DEBUG=""
 if [ -n "${LXD_VERBOSE:-}" ]; then
   DEBUG="--verbose"
@@ -211,6 +216,7 @@ if [ "${1:-"all"}" != "cluster" ]; then
     run_test test_database_no_disk_space "database out of disk space"
     run_test test_sql "lxd sql"
     run_test test_tls_restrictions "TLS restrictions"
+    run_test test_tls_version "TLS version"
     run_test test_oidc "OpenID Connect"
     run_test test_authorization "Authorization"
     run_test test_certificate_edit "Certificate edit"
@@ -274,6 +280,7 @@ if [ "${1:-"all"}" != "cluster" ]; then
     run_test test_projects_network "projects and networks"
     run_test test_projects_limits "projects limits"
     run_test test_projects_usage "projects usage"
+    run_test test_projects_yaml "projects with yaml initialization"
     run_test test_projects_restrictions "projects restrictions"
     run_test test_container_devices_disk "container devices - disk"
     run_test test_container_devices_disk_restricted "container devices - disk - restricted"
@@ -317,6 +324,7 @@ if [ "${1:-"all"}" != "cluster" ]; then
     run_test test_snap_expiry "snapshot expiry"
     run_test test_snap_schedule "snapshot scheduling"
     run_test test_snap_volume_db_recovery "snapshot volume database record recovery"
+    run_test test_snap_fail "snapshot creation failure"
     run_test test_config_profiles "profiles and configuration"
     run_test test_config_edit "container configuration edit"
     run_test test_property "container property"

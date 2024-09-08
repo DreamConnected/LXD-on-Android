@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -125,6 +126,14 @@ func (c *cmdClusterList) command() *cobra.Command {
 
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpRemotes(false)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -155,7 +164,7 @@ func (c *cmdClusterList) run(cmd *cobra.Command, args []string) error {
 	}
 
 	if !cluster.Enabled {
-		return fmt.Errorf(i18n.G("LXD server isn't part of a cluster"))
+		return errors.New(i18n.G("LXD server isn't part of a cluster"))
 	}
 
 	// Get the cluster members
@@ -208,6 +217,14 @@ func (c *cmdClusterShow) command() *cobra.Command {
 
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpClusterMembers(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -256,6 +273,14 @@ func (c *cmdClusterInfo) command() *cobra.Command {
 		`Show useful information about a cluster member`))
 
 	cmd.RunE = c.run
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpClusterMembers(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 
 	return cmd
 }
@@ -307,6 +332,18 @@ func (c *cmdClusterGet) command() *cobra.Command {
 
 	cmd.Flags().BoolVarP(&c.flagIsProperty, "property", "p", false, i18n.G("Get the key as a cluster property"))
 	cmd.RunE = c.run
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpClusterMembers(toComplete)
+		}
+
+		if len(args) == 1 {
+			return c.global.cmpClusterMemberConfigs(args[0])
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 
 	return cmd
 }
@@ -368,6 +405,14 @@ func (c *cmdClusterSet) command() *cobra.Command {
 
 	cmd.Flags().BoolVarP(&c.flagIsProperty, "property", "p", false, i18n.G("Set the key as a cluster property"))
 	cmd.RunE = c.run
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpClusterMembers(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 
 	return cmd
 }
@@ -441,6 +486,18 @@ func (c *cmdClusterUnset) command() *cobra.Command {
 	cmd.Flags().BoolVarP(&c.flagIsProperty, "property", "p", false, i18n.G("Unset the key as a cluster property"))
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpClusterMembers(toComplete)
+		}
+
+		if len(args) == 1 {
+			return c.global.cmpClusterMemberConfigs(args[0])
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -472,6 +529,14 @@ func (c *cmdClusterRename) command() *cobra.Command {
 		`Rename a cluster member`))
 
 	cmd.RunE = c.run
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpClusterMembers(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 
 	return cmd
 }
@@ -525,6 +590,14 @@ func (c *cmdClusterRemove) command() *cobra.Command {
 	cmd.Flags().BoolVarP(&c.flagForce, "force", "f", false, i18n.G("Force removing a member, even if degraded"))
 	cmd.Flags().BoolVar(&c.flagNonInteractive, "yes", false, i18n.G("Don't require user confirmation for using --force"))
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpClusterMembers(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -549,7 +622,7 @@ Are you really sure you want to force removing %s? (yes/no): `), name)
 	input = strings.TrimSuffix(input, "\n")
 
 	if !shared.ValueInSlice(strings.ToLower(input), []string{i18n.G("yes")}) {
-		return fmt.Errorf(i18n.G("User aborted delete operation"))
+		return errors.New(i18n.G("User aborted delete operation"))
 	}
 
 	return nil
@@ -613,6 +686,14 @@ func (c *cmdClusterEnable) command() *cobra.Command {
 
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpRemotes(false)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -645,7 +726,7 @@ func (c *cmdClusterEnable) run(cmd *cobra.Command, args []string) error {
 	}
 
 	if server.Config["core.https_address"] == "" && server.Config["cluster.https_address"] == "" {
-		return fmt.Errorf(i18n.G("This LXD server is not available on the network"))
+		return errors.New(i18n.G("This LXD server is not available on the network"))
 	}
 
 	// Check if already enabled
@@ -655,7 +736,7 @@ func (c *cmdClusterEnable) run(cmd *cobra.Command, args []string) error {
 	}
 
 	if currentCluster.Enabled {
-		return fmt.Errorf(i18n.G("This LXD server is already clustered"))
+		return errors.New(i18n.G("This LXD server is already clustered"))
 	}
 
 	// Enable clustering.
@@ -684,7 +765,7 @@ type cmdClusterEdit struct {
 
 func (c *cmdClusterEdit) command() *cobra.Command {
 	cmd := &cobra.Command{}
-	cmd.Use = usage("edit", i18n.G("[<remote>:]<cluster member>"))
+	cmd.Use = usage("edit", i18n.G("[<remote>:]<member>"))
 	cmd.Short = i18n.G("Edit cluster member configurations as YAML")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(
 		`Edit cluster member configurations as YAML`))
@@ -693,6 +774,14 @@ func (c *cmdClusterEdit) command() *cobra.Command {
     Update a cluster member using the content of member.yaml`))
 
 	cmd.RunE = c.run
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpClusterMembers(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 
 	return cmd
 }
@@ -719,7 +808,7 @@ func (c *cmdClusterEdit) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing cluster member name"))
+		return errors.New(i18n.G("Missing cluster member name"))
 	}
 
 	// If stdin isn't a terminal, read text from it
@@ -799,12 +888,20 @@ type cmdClusterAdd struct {
 
 func (c *cmdClusterAdd) command() *cobra.Command {
 	cmd := &cobra.Command{}
-	cmd.Use = usage("add", i18n.G("[[<remote>:]<name>]"))
+	cmd.Use = usage("add", i18n.G("[[<remote>:]<member>]"))
 	cmd.Short = i18n.G("Request a join token for adding a cluster member")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(`Request a join token for adding a cluster member`))
 	cmd.Flags().StringVar(&c.flagName, "name", "", i18n.G("Cluster member name (alternative to passing it as an argument)")+"``")
 
 	cmd.RunE = c.run
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpClusterMembers(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 
 	return cmd
 }
@@ -826,7 +923,7 @@ func (c *cmdClusterAdd) run(cmd *cobra.Command, args []string) error {
 
 	// Determine the machine name.
 	if resource.name != "" && c.flagName != "" && resource.name != c.flagName {
-		return fmt.Errorf(i18n.G("Cluster member name was provided as both a flag and as an argument"))
+		return errors.New(i18n.G("Cluster member name was provided as both a flag and as an argument"))
 	}
 
 	if resource.name == "" {
@@ -882,6 +979,14 @@ func (c *cmdClusterListTokens) command() *cobra.Command {
 
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpRemotes(false)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -912,7 +1017,7 @@ func (c *cmdClusterListTokens) run(cmd *cobra.Command, args []string) error {
 	}
 
 	if !cluster.Enabled {
-		return fmt.Errorf(i18n.G("LXD server isn't part of a cluster"))
+		return errors.New(i18n.G("LXD server isn't part of a cluster"))
 	}
 
 	// Get the cluster member join tokens. Use default project as join tokens are created in default project.
@@ -982,6 +1087,15 @@ func (c *cmdClusterRevokeToken) command() *cobra.Command {
 	cmd.Long = cli.FormatSection(i18n.G("Description"), cmd.Short)
 
 	cmd.RunE = c.run
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpClusterMembers(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -1006,7 +1120,7 @@ func (c *cmdClusterRevokeToken) run(cmd *cobra.Command, args []string) error {
 	}
 
 	if !cluster.Enabled {
-		return fmt.Errorf(i18n.G("LXD server isn't part of a cluster"))
+		return errors.New(i18n.G("LXD server isn't part of a cluster"))
 	}
 
 	// Get the cluster member join tokens. Use default project as join tokens are created in default project.
@@ -1062,6 +1176,23 @@ func (c *cmdClusterUpdateCertificate) command() *cobra.Command {
 		i18n.G("Update cluster certificate with PEM certificate and key read from input files."))
 
 	cmd.RunE = c.run
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpClusterMembers(toComplete)
+		}
+
+		if len(args) == 1 {
+			return nil, cobra.ShellCompDirectiveDefault
+		}
+
+		if len(args) == 2 {
+			return nil, cobra.ShellCompDirectiveDefault
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -1097,7 +1228,7 @@ func (c *cmdClusterUpdateCertificate) run(cmd *cobra.Command, args []string) err
 	}
 
 	if !cluster.Enabled {
-		return fmt.Errorf(i18n.G("LXD server isn't part of a cluster"))
+		return errors.New(i18n.G("LXD server isn't part of a cluster"))
 	}
 
 	if !shared.PathExists(certFile) {
@@ -1170,6 +1301,14 @@ func (c *cmdClusterEvacuate) command() *cobra.Command {
 	cmd.Flags().BoolVar(&c.action.flagForce, "force", false, i18n.G(`Force evacuation without user confirmation`)+"``")
 	cmd.Flags().StringVar(&c.action.flagAction, "action", "", i18n.G(`Force a particular evacuation action`)+"``")
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpClusterMembers(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -1190,6 +1329,14 @@ func (c *cmdClusterRestore) command() *cobra.Command {
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G(`Restore cluster member`))
 
 	cmd.Flags().BoolVar(&c.action.flagForce, "force", false, i18n.G(`Force restoration without user confirmation`)+"``")
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpClusterMembers(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 
 	return cmd
 }
@@ -1217,7 +1364,7 @@ func (c *cmdClusterEvacuateAction) run(cmd *cobra.Command, args []string) error 
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing cluster member name"))
+		return errors.New(i18n.G("Missing cluster member name"))
 	}
 
 	if !c.flagForce {

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"golang.org/x/sys/unix"
 
 	"github.com/canonical/lxd/lxd/backup"
 	"github.com/canonical/lxd/lxd/db"
@@ -727,7 +729,16 @@ func (d *common) snapshotCommon(inst instance.Instance, name string, expiry time
 		return fmt.Errorf("Create instance snapshot: %w", err)
 	}
 
-	revert.Add(func() { _ = snap.Delete(true) })
+	revert.Add(func() {
+		switch s := snap.(type) {
+		case *lxc:
+			_ = s.delete(true)
+		case *qemu:
+			_ = s.delete(true)
+		default:
+			logger.Error("Failed to delete snapshot during revert", logger.Ctx{"instance": inst.Name(), "snapshot": snap.Name()})
+		}
+	})
 
 	// Mount volume for backup.yaml writing.
 	_, err = pool.MountInstance(inst, d.op)
@@ -1656,6 +1667,70 @@ func (d *common) deleteSnapshots(deleteFunc func(snapInst instance.Instance) err
 		err = deleteFunc(snapInsts[k])
 		if err != nil {
 			return fmt.Errorf("Failed deleting snapshot %q: %w", snapInsts[k].Name(), err)
+		}
+	}
+
+	return nil
+}
+
+// removeUnixDevices reads the devices path and remove all unix devices.
+func (d *common) removeUnixDevices() error {
+	// Check that we indeed have devices to remove
+	if !shared.PathExists(d.DevicesPath()) {
+		return nil
+	}
+
+	// Load the directory listing
+	dents, err := os.ReadDir(d.DevicesPath())
+	if err != nil {
+		return err
+	}
+
+	// Go through all the unix devices
+	for _, f := range dents {
+		// Skip non-Unix devices
+		if !strings.HasPrefix(f.Name(), "forkmknod.unix.") && !strings.HasPrefix(f.Name(), "unix.") && !strings.HasPrefix(f.Name(), device.IBDevPrefix) {
+			continue
+		}
+
+		// Remove the entry
+		devicePath := filepath.Join(d.DevicesPath(), f.Name())
+		err := os.Remove(devicePath)
+		if err != nil {
+			d.logger.Error("Failed removing unix device", logger.Ctx{"err": err, "path": devicePath})
+		}
+	}
+
+	return nil
+}
+
+func (d *common) removeDiskDevices() error {
+	// Check that we indeed have devices to remove
+	if !shared.PathExists(d.DevicesPath()) {
+		return nil
+	}
+
+	// Load the directory listing
+	dents, err := os.ReadDir(d.DevicesPath())
+	if err != nil {
+		return err
+	}
+
+	// Go through all the unix devices
+	for _, f := range dents {
+		// Skip non-disk devices
+		if !strings.HasPrefix(f.Name(), "disk.") {
+			continue
+		}
+
+		// Always try to unmount the host side
+		_ = unix.Unmount(filepath.Join(d.DevicesPath(), f.Name()), unix.MNT_DETACH)
+
+		// Remove the entry
+		diskPath := filepath.Join(d.DevicesPath(), f.Name())
+		err := os.Remove(diskPath)
+		if err != nil {
+			d.logger.Error("Failed to remove disk device path", logger.Ctx{"err": err, "path": diskPath})
 		}
 	}
 

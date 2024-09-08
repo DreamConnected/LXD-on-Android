@@ -10,6 +10,7 @@ import (
 	"github.com/canonical/lxd/lxd/db"
 	"github.com/canonical/lxd/lxd/db/cluster"
 	"github.com/canonical/lxd/lxd/events"
+	"github.com/canonical/lxd/lxd/metrics"
 	"github.com/canonical/lxd/lxd/request"
 	"github.com/canonical/lxd/lxd/response"
 	"github.com/canonical/lxd/lxd/state"
@@ -30,13 +31,19 @@ var eventsCmd = APIEndpoint{
 }
 
 type eventsServe struct {
-	req *http.Request
-	s   *state.State
+	s *state.State
 }
 
 // Render starts event socket.
-func (r *eventsServe) Render(w http.ResponseWriter) error {
-	return eventsSocket(r.s, r.req, w)
+func (r *eventsServe) Render(w http.ResponseWriter, req *http.Request) error {
+	err := eventsSocket(r.s, req, w)
+
+	if err == nil {
+		// If there was an error on Render, the callback function will be called during the error handling.
+		request.MetricsCallback(req, metrics.Success)
+	}
+
+	return err
 }
 
 func (r *eventsServe) String() string {
@@ -61,6 +68,14 @@ func eventsSocket(s *state.State, r *http.Request, w http.ResponseWriter) error 
 		}
 	}
 
+	// Notes on authorization for events:
+	// - Checks are currently performed at the project level. Fine-grained auth uses `can_view_events` on the project,
+	//   TLS auth checks if a restricted identity has access to the project against which the event is defined.
+	// - If project "foo" does not have a particular feature enabled, say 'features.networks', if a network is updated
+	//   via project "foo", no events will be emitted in project "foo" relating to the network. They will only be emitted
+	//   in project "default". In order to get all related events, TLS users must be granted access to the default project,
+	//   fine-grained users can be granted `can_view_events` on the default project. Both must call the events API with
+	//   `all-projects=true`.
 	var projectPermissionFunc auth.PermissionChecker
 	if projectName != "" {
 		err := s.Authorizer.CheckPermission(r.Context(), entity.ProjectURL(projectName), auth.EntitlementCanViewEvents)
@@ -201,5 +216,5 @@ func eventsSocket(s *state.State, r *http.Request, w http.ResponseWriter) error 
 //	  "500":
 //	    $ref: "#/responses/InternalServerError"
 func eventsGet(d *Daemon, r *http.Request) response.Response {
-	return &eventsServe{req: r, s: d.State()}
+	return &eventsServe{s: d.State()}
 }

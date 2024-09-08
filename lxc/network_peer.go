@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -83,6 +84,14 @@ func (c *cmdNetworkPeerList) command() *cobra.Command {
 	cmd.RunE = c.run
 	cmd.Flags().StringVarP(&c.flagFormat, "format", "f", "table", i18n.G("Format (csv|json|table|yaml|compact)")+"``")
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworks(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -107,7 +116,7 @@ func (c *cmdNetworkPeerList) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network name"))
+		return errors.New(i18n.G("Missing network name"))
 	}
 
 	peers, err := resource.server.GetNetworkPeers(resource.name)
@@ -158,6 +167,18 @@ func (c *cmdNetworkPeerShow) command() *cobra.Command {
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G("Show network peer configurations"))
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworks(toComplete)
+		}
+
+		if len(args) == 1 {
+			return c.global.cmpNetworkPeers(args[0])
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -177,11 +198,11 @@ func (c *cmdNetworkPeerShow) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network name"))
+		return errors.New(i18n.G("Missing network name"))
 	}
 
 	if args[1] == "" {
-		return fmt.Errorf(i18n.G("Missing peer name"))
+		return errors.New(i18n.G("Missing peer name"))
 	}
 
 	client := resource.server
@@ -215,6 +236,14 @@ func (c *cmdNetworkPeerCreate) command() *cobra.Command {
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G("Create new network peering"))
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworks(toComplete)
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -234,15 +263,15 @@ func (c *cmdNetworkPeerCreate) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network name"))
+		return errors.New(i18n.G("Missing network name"))
 	}
 
 	if args[1] == "" {
-		return fmt.Errorf(i18n.G("Missing peer name"))
+		return errors.New(i18n.G("Missing peer name"))
 	}
 
 	if args[2] == "" {
-		return fmt.Errorf(i18n.G("Missing target network"))
+		return errors.New(i18n.G("Missing target network"))
 	}
 
 	targetParts := strings.SplitN(args[2], "/", 2)
@@ -332,6 +361,23 @@ func (c *cmdNetworkPeerGet) command() *cobra.Command {
 	cmd.RunE = c.run
 
 	cmd.Flags().BoolVarP(&c.flagIsProperty, "property", "p", false, i18n.G("Get the key as a network peer property"))
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworks(toComplete)
+		}
+
+		if len(args) == 1 {
+			return c.global.cmpNetworkPeers(args[0])
+		}
+
+		if len(args) == 2 {
+			return c.global.cmpNetworkPeerConfigs(args[0], args[1])
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -352,11 +398,11 @@ func (c *cmdNetworkPeerGet) run(cmd *cobra.Command, args []string) error {
 	client := resource.server
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network name"))
+		return errors.New(i18n.G("Missing network name"))
 	}
 
 	if args[1] == "" {
-		return fmt.Errorf(i18n.G("Missing peer name"))
+		return errors.New(i18n.G("Missing peer name"))
 	}
 
 	// Get the current config.
@@ -404,6 +450,19 @@ For backward compatibility, a single configuration key may still be set with:
 	cmd.RunE = c.run
 
 	cmd.Flags().BoolVarP(&c.flagIsProperty, "property", "p", false, i18n.G("Set the key as a network peer property"))
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworks(toComplete)
+		}
+
+		if len(args) == 1 {
+			return c.global.cmpNetworkPeers(args[0])
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -423,11 +482,11 @@ func (c *cmdNetworkPeerSet) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network name"))
+		return errors.New(i18n.G("Missing network name"))
 	}
 
 	if args[1] == "" {
-		return fmt.Errorf(i18n.G("Missing peer name"))
+		return errors.New(i18n.G("Missing peer name"))
 	}
 
 	client := resource.server
@@ -489,6 +548,23 @@ func (c *cmdNetworkPeerUnset) command() *cobra.Command {
 	cmd.RunE = c.run
 
 	cmd.Flags().BoolVarP(&c.flagIsProperty, "property", "p", false, i18n.G("Unset the key as a network peer property"))
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworks(toComplete)
+		}
+
+		if len(args) == 1 {
+			return c.global.cmpNetworkPeers(args[0])
+		}
+
+		if len(args) == 2 {
+			return c.global.cmpNetworkPeerConfigs(args[0], args[1])
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -517,6 +593,18 @@ func (c *cmdNetworkPeerEdit) command() *cobra.Command {
 	cmd.Short = i18n.G("Edit network peer configurations as YAML")
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G("Edit network peer configurations as YAML"))
 	cmd.RunE = c.run
+
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworks(toComplete)
+		}
+
+		if len(args) == 1 {
+			return c.global.cmpNetworkPeers(args[0])
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
 
 	return cmd
 }
@@ -553,11 +641,11 @@ func (c *cmdNetworkPeerEdit) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network name"))
+		return errors.New(i18n.G("Missing network name"))
 	}
 
 	if args[1] == "" {
-		return fmt.Errorf(i18n.G("Missing peer name"))
+		return errors.New(i18n.G("Missing peer name"))
 	}
 
 	client := resource.server
@@ -643,6 +731,18 @@ func (c *cmdNetworkPeerDelete) command() *cobra.Command {
 	cmd.Long = cli.FormatSection(i18n.G("Description"), i18n.G("Delete network peerings"))
 	cmd.RunE = c.run
 
+	cmd.ValidArgsFunction = func(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+		if len(args) == 0 {
+			return c.global.cmpNetworks(toComplete)
+		}
+
+		if len(args) == 1 {
+			return c.global.cmpNetworkPeers(args[0])
+		}
+
+		return nil, cobra.ShellCompDirectiveNoFileComp
+	}
+
 	return cmd
 }
 
@@ -662,11 +762,11 @@ func (c *cmdNetworkPeerDelete) run(cmd *cobra.Command, args []string) error {
 	resource := resources[0]
 
 	if resource.name == "" {
-		return fmt.Errorf(i18n.G("Missing network name"))
+		return errors.New(i18n.G("Missing network name"))
 	}
 
 	if args[1] == "" {
-		return fmt.Errorf(i18n.G("Missing peer name"))
+		return errors.New(i18n.G("Missing peer name"))
 	}
 
 	client := resource.server

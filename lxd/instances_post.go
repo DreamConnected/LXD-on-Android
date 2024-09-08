@@ -28,6 +28,7 @@ import (
 	"github.com/canonical/lxd/lxd/instance/operationlock"
 	"github.com/canonical/lxd/lxd/operations"
 	"github.com/canonical/lxd/lxd/project"
+	"github.com/canonical/lxd/lxd/project/limits"
 	"github.com/canonical/lxd/lxd/request"
 	"github.com/canonical/lxd/lxd/response"
 	"github.com/canonical/lxd/lxd/scriptlet"
@@ -53,7 +54,7 @@ func ensureDownloadedImageFitWithinBudget(s *state.State, r *http.Request, op *o
 
 	var budget int64
 	err = s.DB.Cluster.Transaction(context.TODO(), func(ctx context.Context, tx *db.ClusterTx) error {
-		budget, err = project.GetImageSpaceBudget(s.GlobalConfig, tx, p.Name)
+		budget, err = limits.GetImageSpaceBudget(s.GlobalConfig, tx, p.Name)
 		return err
 	})
 	if err != nil {
@@ -124,7 +125,13 @@ func createFromImage(s *state.State, r *http.Request, p api.Project, profiles []
 			return err
 		}
 
-		return instanceCreateFromImage(s, img, args, op)
+		// Actually create the instance.
+		err = instanceCreateFromImage(s, img, args, op)
+		if err != nil {
+			return err
+		}
+
+		return instanceCreateFinish(s, req, args)
 	}
 
 	resources := map[string][]api.URL{}
@@ -175,8 +182,13 @@ func createFromNone(s *state.State, r *http.Request, projectName string, profile
 	}
 
 	run := func(op *operations.Operation) error {
+		// Actually create the instance.
 		_, err := instanceCreateAsEmpty(s, args)
-		return err
+		if err != nil {
+			return err
+		}
+
+		return instanceCreateFinish(s, req, args)
 	}
 
 	resources := map[string][]api.URL{}
@@ -389,7 +401,7 @@ func createFromConversion(s *state.State, r *http.Request, projectName string, p
 
 	// Validate conversion options.
 	for _, opt := range req.Source.ConversionOptions {
-		if !slices.Contains([]string{"format"}, opt) {
+		if !slices.Contains([]string{"format", "virtio"}, opt) {
 			return response.BadRequest(fmt.Errorf("Invalid conversion option %q", opt))
 		}
 	}
@@ -602,6 +614,7 @@ func createFromCopy(s *state.State, r *http.Request, projectName string, profile
 	}
 
 	run := func(op *operations.Operation) error {
+		// Actually create the instance.
 		_, err := instanceCreateAsCopy(s, instanceCreateAsCopyOpts{
 			sourceInstance:       source,
 			targetInstance:       args,
@@ -614,7 +627,7 @@ func createFromCopy(s *state.State, r *http.Request, projectName string, profile
 			return err
 		}
 
-		return nil
+		return instanceCreateFinish(s, req, args)
 	}
 
 	resources := map[string][]api.URL{}
@@ -701,15 +714,16 @@ func createFromBackup(s *state.State, r *http.Request, projectName string, data 
 	}
 
 	// Check project permissions.
+	var req api.InstancesPost
 	err = s.DB.Cluster.Transaction(s.ShutdownCtx, func(ctx context.Context, tx *db.ClusterTx) error {
-		req := api.InstancesPost{
+		req = api.InstancesPost{
 			InstancePut: bInfo.Config.Container.Writable(),
 			Name:        bInfo.Name,
 			Source:      api.InstanceSource{}, // Only relevant for "copy" or "migration", but may not be nil.
 			Type:        api.InstanceType(bInfo.Config.Container.Type),
 		}
 
-		return project.AllowInstanceCreation(s.GlobalConfig, tx, projectName, req)
+		return limits.AllowInstanceCreation(s.GlobalConfig, tx, projectName, req)
 	})
 	if err != nil {
 		return response.SmartError(err)
@@ -838,7 +852,8 @@ func createFromBackup(s *state.State, r *http.Request, projectName string, data 
 		}
 
 		runRevert.Success()
-		return nil
+
+		return instanceCreateFinish(s, &req, db.InstanceArgs{Name: bInfo.Name, Project: bInfo.Project})
 	}
 
 	resources := map[string][]api.URL{}
@@ -1070,7 +1085,7 @@ func instancesPost(d *Daemon, r *http.Request) response.Response {
 			}
 
 			// Check if the given target is allowed and try to resolve the right member or group
-			targetMemberInfo, targetGroupName, err = project.CheckTarget(ctx, s.Authorizer, r, tx, targetProject, target, allMembers)
+			targetMemberInfo, targetGroupName, err = limits.CheckTarget(ctx, s.Authorizer, r, tx, targetProject, target, allMembers)
 			if err != nil {
 				return err
 			}
@@ -1218,20 +1233,18 @@ func instancesPost(d *Daemon, r *http.Request) response.Response {
 				}
 			}
 
-			clusterGroupsAllowed := project.GetRestrictedClusterGroups(targetProject)
+			clusterGroupsAllowed := limits.GetRestrictedClusterGroups(targetProject)
 
 			candidateMembers, err = tx.GetCandidateMembers(ctx, allMembers, architectures, targetGroupName, clusterGroupsAllowed, s.GlobalConfig.OfflineThreshold())
 			if err != nil {
 				return err
 			}
-
-			return nil
 		}
 
 		if !clusterNotification {
 			// Check that the project's limits are not violated. Note this check is performed after
 			// automatically generated config values (such as ones from an InstanceType) have been set.
-			err = project.AllowInstanceCreation(s.GlobalConfig, tx, targetProjectName, req)
+			err = limits.AllowInstanceCreation(s.GlobalConfig, tx, targetProjectName, req)
 			if err != nil {
 				return err
 			}
@@ -1487,4 +1500,20 @@ func clusterCopyContainerInternal(s *state.State, r *http.Request, source instan
 
 	// Run the migration
 	return createFromMigration(s, nil, projectName, profiles, req)
+}
+
+// instanceCreateFinish finalizes the creation process of an instance by starting it based on
+// the Start field of the request.
+func instanceCreateFinish(s *state.State, req *api.InstancesPost, args db.InstanceArgs) error {
+	if req == nil || !req.Start {
+		return nil
+	}
+
+	// Start the instance.
+	inst, err := instance.LoadByProjectAndName(s, args.Project, args.Name)
+	if err != nil {
+		return fmt.Errorf("Failed to load the instance: %w", err)
+	}
+
+	return inst.Start(false)
 }

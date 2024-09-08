@@ -1704,6 +1704,20 @@ test_clustering_join_api() {
   ns2="${prefix}2"
   LXD_NETNS="${ns2}" spawn_lxd "${LXD_TWO_DIR}" false
 
+  # Check a join token cannot be created for the reserved name 'none'
+  ! lxc cluster add none --quiet || false
+
+  # Check a server with the name 'valid' cannot be joined when modifying the token.
+  # Therefore replace the valid name in the token with 'none'.
+  malicious_token="$(lxc cluster add valid --quiet | base64 -d | jq '.server_name |= "none"' | base64 --wrap=0)"
+  op=$(curl --unix-socket "${LXD_TWO_DIR}/unix.socket" -X PUT "lxd/1.0/cluster" -d "{\"server_name\":\"valid\",\"enabled\":true,\"member_config\":[{\"entity\": \"storage-pool\",\"name\":\"data\",\"key\":\"source\",\"value\":\"\"}],\"server_address\":\"10.1.1.102:8443\",\"cluster_address\":\"10.1.1.101:8443\",\"cluster_certificate\":\"${cert}\",\"cluster_token\":\"${malicious_token}\"}" | jq -r .operation)
+  [ "$(curl --unix-socket "${LXD_TWO_DIR}/unix.socket" "lxd${op}/wait" | jq '.error_code')" = "403" ]
+
+  # Check that the server cannot be joined using a valid token by changing it's name to 'none'.
+  token="$(lxc cluster add valid2 --quiet)"
+  [ "$(curl --unix-socket "${LXD_TWO_DIR}/unix.socket" -X PUT "lxd/1.0/cluster" -d "{\"server_name\":\"none\",\"enabled\":true,\"member_config\":[{\"entity\": \"storage-pool\",\"name\":\"data\",\"key\":\"source\",\"value\":\"\"}],\"server_address\":\"10.1.1.102:8443\",\"cluster_address\":\"10.1.1.101:8443\",\"cluster_certificate\":\"${cert}\",\"cluster_token\":\"${token}\"}" | jq -r '.error_code')" = "400" ]
+
+  # Check the server can be joined.
   token="$(lxc cluster add node2 --quiet)"
   op=$(curl --unix-socket "${LXD_TWO_DIR}/unix.socket" -X PUT "lxd/1.0/cluster" -d "{\"server_name\":\"node2\",\"enabled\":true,\"member_config\":[{\"entity\": \"storage-pool\",\"name\":\"data\",\"key\":\"source\",\"value\":\"\"}],\"server_address\":\"10.1.1.102:8443\",\"cluster_address\":\"10.1.1.101:8443\",\"cluster_certificate\":\"${cert}\",\"cluster_token\":\"${token}\"}" | jq -r .operation)
   curl --unix-socket "${LXD_TWO_DIR}/unix.socket" "lxd${op}/wait"
@@ -3148,28 +3162,19 @@ test_clustering_edit_configuration() {
   config=$(mktemp -p "${TEST_DIR}" XXX)
   # Update the cluster configuration with new port numbers
   LXD_DIR="${LXD_ONE_DIR}" lxd cluster show > "${config}"
+
+  # lxd cluster edit generates ${LXD_DIR}/database/lxd_recovery_db.tar.gz
   sed -e "s/:8443/:9393/" -i "${config}"
   LXD_DIR="${LXD_ONE_DIR}" lxd cluster edit < "${config}"
 
-  LXD_DIR="${LXD_TWO_DIR}" lxd cluster show > "${config}"
-  sed -e "s/:8443/:9393/" -i "${config}"
-  LXD_DIR="${LXD_TWO_DIR}" lxd cluster edit < "${config}"
+  for other_dir in "${LXD_TWO_DIR}" "${LXD_THREE_DIR}" "${LXD_FOUR_DIR}" "${LXD_FIVE_DIR}" "${LXD_SIX_DIR}"; do
+    cp "${LXD_ONE_DIR}/database/lxd_recovery_db.tar.gz" "${other_dir}/database/"
+  done
 
-  LXD_DIR="${LXD_THREE_DIR}" lxd cluster show > "${config}"
-  sed -e "s/:8443/:9393/" -i "${config}"
-  LXD_DIR="${LXD_THREE_DIR}" lxd cluster edit < "${config}"
-
-  LXD_DIR="${LXD_FOUR_DIR}" lxd cluster show > "${config}"
-  sed -e "s/:8443/:9393/" -i "${config}"
-  LXD_DIR="${LXD_FOUR_DIR}" lxd cluster edit < "${config}"
-
-  LXD_DIR="${LXD_FIVE_DIR}" lxd cluster show > "${config}"
-  sed -e "s/:8443/:9393/" -i "${config}"
-  LXD_DIR="${LXD_FIVE_DIR}" lxd cluster edit < "${config}"
-
-  LXD_DIR="${LXD_SIX_DIR}" lxd cluster show > "${config}"
-  sed -e "s/:8443/:9393/" -i "${config}"
-  LXD_DIR="${LXD_SIX_DIR}" lxd cluster edit < "${config}"
+  # While it does work to load the recovery DB on the node which generated it,
+  # we should test to make sure that the recovery operation left the database
+  # ready to go.
+  rm "${LXD_ONE_DIR}/database/lxd_recovery_db.tar.gz"
 
   # Respawn the nodes
   LXD_NETNS="${ns1}" respawn_lxd "${LXD_ONE_DIR}" false
@@ -3506,6 +3511,15 @@ test_clustering_groups() {
 
   # delete cluster group "newgroup"
   lxc cluster group delete cluster:newgroup
+
+  # Try to create a cluster group using yaml
+  lxc cluster group create cluster:yamlgroup <<EOF
+description: foo
+EOF
+
+  [ "$(lxc query cluster:/1.0/cluster/groups/yamlgroup | jq -r '.description')" = "foo" ]
+  # Delete the cluster group "yamlgroup"
+  lxc cluster group delete cluster:yamlgroup
 
   # With these settings:
   # - node1 will receive instances unless a different node is directly targeted (not via group)
