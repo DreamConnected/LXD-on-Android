@@ -787,9 +787,9 @@ func (cg *CGroup) GetCpuset() (string, error) {
 	case Unavailable:
 		return "", ErrControllerMissing
 	case V1:
-		return cg.rw.Get(version, "cpuset", "cpuset.cpus")
+		return cg.rw.Get(version, "cpuset", "cpus")
 	case V2:
-		return cg.rw.Get(version, "cpuset", "cpuset.cpus")
+		return cg.rw.Get(version, "cpuset", "cpus")
 	}
 
 	return "", ErrUnknownVersion
