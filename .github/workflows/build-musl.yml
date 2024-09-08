@@ -1,0 +1,101 @@
+# This workflow will build a golang project
+# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
+
+name: MUSL with LXC-Core 5.0.3 | API 1.7.0 
+
+on:
+  #push:
+  #  branches: [ "musl-gcc" ]
+  #pull_request:
+  #  branches: [ "musl-gcc" ]
+  workflow_dispatch:
+
+env:
+  GITHUB_TOKEN: ${{ secrets.GOACTION }}      
+jobs:
+  buildAndDeploy:
+    runs-on:  ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    strategy:
+      matrix:
+        include:
+          - goarch: arm64
+            goos: linux
+          - cc : /home/runner/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
+            cxx : /home/runner/aarch64-linux-musl-cross/bin/aarch64-linux-musl-g++
+            ld : /home/runner/aarch64-linux-musl-cross/bin/ld.gold
+            ar : /home/runner/aarch64-linux-musl-cross/bin/aarch64-linux-musl-ar
+            as : /home/runner/aarch64-linux-musl-cross/bin/aarch64-linux-musl-as
+            objcopy : /home/runner/aarch64-linux-musl-cross/bin/aarch64-linux-musl-objcopy
+            strip : /home/runner/aarch64-linux-musl-cross/bin/aarch64-linux-musl-strip
+            ranlib : /home/runner/aarch64-linux-musl-cross/bin/aarch64-linux-musl-ranlib
+            
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Go
+      uses: actions/setup-go@v3
+      with: 
+        go-version: '1.22.5'
+    - run: go version
+    
+    - name: Preparation before compilation
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -qq --yes apparmor build-essential curl make pkg-config unzip
+
+        mkdir ../deps
+        wget https://musl.cc/aarch64-linux-musl-cross.tgz
+        tar -xzf aarch64-linux-musl-cross.tgz -C ../
+        wget https://github.com/DreamConnected/LXC-on-Android/releases/download/lxc-5.0.3/lxc-5.0.3-musl-release.tar.gz
+        tar -xzf lxc-5.0.3-musl-release.tar.gz -C ../deps
+
+        cd ../deps
+        wget https://download-mirror.savannah.gnu.org/releases/attr/attr-2.5.2.tar.gz | tar -xzf attr-2.5.2.tar.gz
+        wget https://download-mirror.savannah.gnu.org/releases/acl/acl-2.3.2.tar.gz | tar -xzf acl-2.3.2.tar.gz
+        wget https://dev.gentoo.org/~blueness/eudev/eudev-3.2.10.tar.gz | tar -xzf eudev-3.2.10.tar.gz
+        wget https://mirrors.edge.kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-2.69.tar.gz | tar -xzf libcap-2.69.tar.gz
+        wget https://www.sqlite.org/2024/sqlite-autoconf-3460100.tar.gz | tar -xzf sqlite-autoconf-3460100.tar.gz
+        rm attr-2.5.2.tar.gz acl-2.3.2.tar.gz eudev-3.2.10.tar.gz libcap-2.69.tar.gz sqlite-autoconf-3460100.tar.gz
+
+        git clone https://github.com/libuv/libuv
+        git clone https://github.com/lz4/lz4
+
+        cd $OLDPWD
+
+    - name: Cross-compilation libattr
+      env:
+        CC: ${{ matrix.cc }}
+        CXX: ${{ matrix.cxx }}
+        LD : ${{ matrix.ld }}
+        AR : ${{ matrix.ar }}
+        AS : ${{ matrix.as }}
+        OBJCOPY : ${{ matrix.objcopy }}
+        STRIP : ${{ matrix.strip }}
+        RANLIB : ${{ matrix.ranlib }}
+      run: |
+        cd attr-2.5.2/
+        ./configure --host=aarch64-linux-musl --prefix="/opt/usr" --disable-shared --enable-static
+    
+    - name: make
+      run: make
+      env:
+        GOOS: ${{ matrix.goos }}
+        GOARCH: ${{ matrix.goarch }}
+        
+    - name: Packaging...
+      run: tar czf LXD-${{ matrix.goos }}-${{ matrix.goarch }}.tgz ../go/bin/arm64-linux/*
+      
+    - name: Get version
+      id: version
+      run: echo "::set-output name=version::$(git rev-parse --short HEAD)"
+      
+    - name: Gets latest created release info
+      uses: "marvinpinto/action-automatic-releases@latest"
+      with:
+          repo_token: "${{ secrets.GITHUB_TOKEN }}"
+          automatic_release_tag:  ${{ steps.version.outputs.version }}
+          prerelease: true
+          title: "Development Build"
+          files: |
+            ./nodeUpgrade-${{ matrix.goos }}-${{ matrix.goarch }}.tgz          
